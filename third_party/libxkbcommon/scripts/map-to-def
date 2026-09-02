@@ -1,0 +1,31 @@
+#!/usr/bin/env python
+
+"""A script to generate MSVC Module-Definition files from version-script
+files (which are maintained manually)."""
+
+import re
+import sys
+import pathlib
+
+
+def symbols_from_map(path):
+    return re.findall(r"^\s+(r?xkb_.*);", path.read_text("utf-8"), re.MULTILINE)
+
+
+if not (3 <= len(sys.argv) <= 4):
+    raise SystemExit("Usage: {} file.map soname_version [file.def]".format(sys.argv[0]))
+
+
+map_file = pathlib.Path(sys.argv[1])
+map_file_version = sys.argv[2].split(".")[0]
+map_symbols = set(symbols_from_map(map_file))
+
+if len(sys.argv) == 4:
+    def_file = open(sys.argv[3], "w", encoding="utf-8")
+else:
+    def_file = sys.stdout
+
+def_file.write(f"LIBRARY {map_file.stem}-{map_file_version}\n")
+def_file.write("EXPORTS\n")
+for symbol in sorted(map_symbols):
+    def_file.write("\t{}\n".format(symbol))

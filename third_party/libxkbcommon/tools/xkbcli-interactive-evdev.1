@@ -1,0 +1,205 @@
+.Dd February 27, 2026
+.Dt XKBCLI\-INTERACTIVE\-EVDEV 1
+.Os
+.
+.Sh NAME
+.Nm "xkbcli\-interactive\-evdev"
+.Nd interactive debugger for X Keyboard keymaps
+.
+.Sh SYNOPSIS
+.Nm
+.Op Ar options
+.Op Ar KEYMAP_PATH
+.
+.Sh DESCRIPTION
+.Nm
+is a commandline tool to interactively debug XKB keymaps by listening to
+.Pa /dev/input/eventX
+evdev devices.
+.
+.Pp
+.Nm
+requires permission to open the evdev device nodes.
+This usually requires being the
+.Dq root
+user or belonging to the
+.Dq input
+group.
+.
+.Ppr
+Press the
+.Aq Escape
+key to exit.
+.
+.Pp
+This is a debugging tool, its behavior or output is not guaranteed to be stable.
+.
+.Bl -tag -width Ds
+.It Ar KEYMAP_PATH
+Path to a keymap file, or
+.Dq \-
+to read the standard input
+.
+.It Fl h, \-help
+Print help and exit
+.
+.It Fl V, \-version
+Print version information and exit
+.
+.It Fl \-verbose
+Enable verbose debugging output
+.
+.It Fl \-include Ar PATH
+Add the given path to the include path list.
+This option is order\-dependent, include paths given first are searched first.
+If an include path is given, the default include path list is not used.
+Use
+.Fl \-include\-defaults
+to add the default include paths.
+.
+.It Fl \-include\-defaults
+Add the default set of include directories.
+This option is order-dependent, include paths given first are searched first.
+.
+.It Fl \-format Ar KEYMAP_FORMAT
+Specify the keymap format (numeric or label, e.g.\&
+.Dq v1 )
+.
+.It Fl \-strict
+Parse using the strict mode.
+.
+.It Fl \-rules Ar RULES
+The XKB ruleset
+.
+.It Fl \-model Ar MODEL
+The XKB model
+.
+.It Fl \-layout Ar LAYOUT
+The XKB layout
+.
+.It Fl \-variant Ar VARIANT
+The XKB layout variant
+.
+.It Fl \-option Ar OPTIONS
+The XKB options
+.
+.It Fl \-enable\-environment\-names
+Allow to set the default RMLVO values via the following environment variables:
+.Bl -dash -compact -hang
+.It
+.Ev XKB_DEFAULT_RULES
+.It
+.Ev XKB_DEFAULT_MODEL
+.It
+.Ev XKB_DEFAULT_LAYOUT
+.It
+.Ev XKB_DEFAULT_VARIANT
+.It
+.Ev XKB_DEFAULT_OPTIONS
+.El
+Note that this option may affect the default values of the previous options.
+.
+.It Fl \-legacy\-state\-api Op Ar =true|false
+Use the legacy state API instead of the server machine API.
+.
+.It Fl \-controls Ar CONTROLS
+Enable or disable controls. It implies
+.Fl \-legacy\-state\-api=false
+\&.
+.Ar CONTROLS
+is a comma-separated-list of the following entries:
+.Bl -tag -compact -hang
+.It Ar sticky-keys
+Enable sticky-keys accessibility feature
+.It Ar sticky-keys-no-simultaneous
+Deactivate sticky-keys if 2 keys or more are pressed simultaneously.
+.It Ar sticky-keys-latch-to-lock
+Enable latch-to-lock option for sticky-keys
+.It Ar latch-simultaneous
+Relax the strict tapping sequence requirement operating key latches.
+.It Ar overlay Ns Brq 1-8
+Enable the corresponding keyboard overlay
+.It Ar mouse-keys
+Enable the mouse emulation
+.El
+Each entry may be preceded by
+.Ar \+
+or
+.Ar \-
+in order to respectively enable or disable the corresponding control.
+.
+.It Fl \-modifiers\-mapping Ar MAPPING
+Use the given modifiers mapping.
+.Ar MAPPING
+is a comma-separated list of modifiers masks mappings with format
+.Ar source:target
+, e.g.
+.Ar Control+Alt:LevelThree,Alt:Meta
+\&.
+It implies
+.Fl \-legacy\-state\-api=false
+\&.
+.
+.It Fl \-shortcuts\-mask Ar MASK
+Use the given modifier mask to enable selecting a specific
+layout (see
+.Fl \-shortcuts\-mapping
+) when some of these modifiers are active.
+The modifier mask is a plus-separated list of modifiers names, e.g.
+.Ar "Control+Alt+Super"
+\&.
+It implies
+.Fl \-legacy\-state\-api=false
+\&.
+.
+.It Fl \-shortcuts\-mapping Ar MAPPING
+Use the given layout indices mapping to enable selecting a specific
+layout when some modifiers are active (see
+.Fl \-shortcuts\-mask
+).
+.Ar MAPPINGS
+is a comma-separated list of 1-indexed layout
+indices mappings with format
+.Ar source:target
+, e.g.
+.Ar 2:1,3:1
+\&.
+It implies
+.Fl \-legacy\-state\-api=false
+\&.
+.
+.It Fl \-keymap Ar FILE
+Specify a keymap path.
+This option is mutually exclusive with the RMLVO options.
+.
+.It Fl \-enable\-compose
+Enable Compose functionality
+.
+.It Fl \-consumed\-mode Brq xkb|gtk
+Set the consumed modifiers mode (default: xkb)
+.
+.It Fl \-without\-x11\-offset
+Don't add an offset of 8 when converting an evdev keycode to an XKB keycode.
+You probably don't want this option.
+.
+.It Fl \-report\-state\-changes
+Report changes to the keyboard state
+.It Fl 1, \-uniline
+Enable uniline event output.
+.
+.It Fl *, \-multiline
+Enable multiline event output.
+.
+.It Fl \-short
+Print shorter event output.
+.
+.It Fl \-no-state-report
+Do not report state changes
+.
+.El
+.
+.Sh SEE ALSO
+.Xr xkbcli 1 ,
+.Xr xkbcli\-interactive\-wayland 1 ,
+.Xr xkbcli\-interactive\-x11 1 ,
+.Lk https://xkbcommon.org "The libxkbcommon online documentation"

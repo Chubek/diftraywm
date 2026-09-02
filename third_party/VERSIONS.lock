@@ -1,0 +1,14 @@
+DiftrayWM vendored snapshot lock
+date: 2026-09-01
+
+wayland: tree snapshot
+wlroots: tree snapshot
+libinput: tree snapshot
+libxkbcommon: tree snapshot
+fontconfig: tree snapshot
+libtsm: tree snapshot
+libvterm: tree snapshot
+harfbuzz: tree snapshot
+freetype: tree snapshot
+libptytty: tree snapshot
+PEGTL: tree snapshot

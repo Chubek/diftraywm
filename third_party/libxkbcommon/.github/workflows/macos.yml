@@ -1,0 +1,73 @@
+name: macos
+
+on:
+  push:
+    branches:
+      - master
+      - 'releases/**'
+  pull_request:
+    branches:
+      - master
+      - 'releases/**'
+
+# Set permissions at the job level.
+permissions: {}
+
+jobs:
+  macos:
+    runs-on: macos-14
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      # Do not install setxkbmap from this source. Unfortunately it is not
+      # on available in Homebrew anymore
+      # - name: Install MacPorts
+      #   run: |
+      #       curl -LO https://github.com/macports/macports-base/releases/download/v2.12.2/MacPorts-2.12.2-14-Sonoma.pkg
+      #       sudo installer -pkg MacPorts-2.12.2-14-Sonoma.pkg -target /
+      #       echo "/opt/local/bin" >> $GITHUB_PATH
+      #       echo "/opt/local/sbin" >> $GITHUB_PATH
+      - name: Install dependencies
+        run: |
+          sudo mkdir -p /tmp/.X11-unix
+          sudo chmod 1777 /tmp/.X11-unix
+          brew install libxml2 meson ninja xkeyboard-config xorg-server
+          brew link libxml2 --force
+
+          # TODO: fix installing setxkbmap
+          # sudo port install setxkbmap
+
+          # https://docs.brew.sh/Homebrew-and-Python#pep-668-python312-and-virtual-environments
+          python3 -m venv venv
+          source venv/bin/activate
+          # Jinja2 is needed for merge-modes tests
+          pip3 install PyYaml Jinja2
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+      - name: Setup
+        run: |
+          source venv/bin/activate
+          meson setup \
+            -Dbuildtype=debugoptimized \
+            -Denable-parser-auto-generation=false \
+            -Denable-wayland=false \
+            -Denable-x11=true \
+            -Dxkb-config-root="$(brew --prefix xkeyboard-config)/share/X11/xkb" \
+            -Dx-locale-root="$(brew --prefix xorg-server)/share/X11/locale" \
+            build
+      - name: Build
+        run: |
+          source venv/bin/activate
+          meson compile -C build
+      - name: Test
+        run: |
+          source venv/bin/activate
+          # FIXME: deactivate x11 tests for now
+          meson test -C build --print-errorlogs --no-suite x11

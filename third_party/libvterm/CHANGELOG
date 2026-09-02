@@ -1,0 +1,1008 @@
+10.9.1
+
+* [Bryan Christ] vterm_write_keymap: if KEY_F(1..12) misses the terminfo
+  table, emit the xterm sequence (F10 = CSI 21~).  Do not pack leftover
+  KEY_MIN..KEY_MAX codes as two raw bytes (KEY_F(10)=274 became 0x12 0x01).
+
+10.9
+
+OSC 52 clipboard (inner hop)
+* [Bryan Christ] Parse OSC 52 SET from the child: decode the base64 Pd,
+  store it on the instance, and fire VTERM_EVENT_CLIPBOARD (with
+  VTERM_MASK_CLIPBOARD) so the embedder can push it to xclip, OSC 52
+  out, or nowhere.  libvterm does not touch the host clipboard.
+* [Bryan Christ] OSC 52 query (Pd = '?') is refused -- no reply is
+  written to the child.  Empty Pd clears the stored payload and still
+  notifies the hook.  vterm_clipboard_get / vterm_clipboard_clear for
+  poll-style embedders.
+* [Bryan Christ] OSC sequences may grow the escape buffer up to 256 KiB
+  so a real clipboard payload is not truncated at the 128-byte CSI cap
+  and spilled onto the screen.  CSI stays inside the small buffer.
+* [Bryan Christ] vshell (the reference embedder) subscribes to
+  VTERM_MASK_CLIPBOARD.  On SET it forwards via xclip (CLIPBOARD, or
+  PRIMARY for Pc p/s) and re-emits OSC 52 to the outer terminal as a
+  best-effort extra -- xfce4-terminal ignores the latter.  The frame
+  shows CLIP <nbytes> / CLIP cleared.
+
+10.8
+
+Paste / pty-write reliability
+* [Bryan Christ] Add vterm_write_data(vterm, data, len): bulk raw write to the
+  child pty with full write-all (short writes, EINTR, EAGAIN/POLLOUT retried).
+  Prefer this over a per-byte vterm_write_pipe loop for paste -- one transfer,
+  no silent character loss when the master buffer fills.
+* [Bryan Christ] When the child has enabled DECSET 2004 (bracketed paste),
+  vterm_write_data wraps the payload with ESC[200~ ... ESC[201~.  Per-keystroke
+  vterm_write_pipe is never wrapped.  SM/RM 2004 now track STATE_BRACKETED_PASTE
+  instead of no-op stubs.
+* [Bryan Christ] Multi-byte packed keycodes (ESC-then-payload from the host
+  kmio layer) are emitted low-byte-first, matching the pack order.  The old
+  high-to-low unpack inverted every Alt/escape sequence and mangled host
+  bracketed-paste wrappers on the way to the child.
+* [Bryan Christ] Pty master O_NONBLOCK is set with F_SETFL (was F_SETFD, which
+  never applied the flag).  Combined with write-all, keystroke and paste writes
+  complete without hanging the host or dropping bytes.
+
+10.7
+
+Scrollback-view cell copy
+* [Bryan Christ] Add vterm_copy_scrollback(vterm, nlines, &rows, &cols): the
+  copy-buffer counterpart to vterm_wnd_scrollback, composing the newest nlines
+  evicted history rows above the live screen into a freshly allocated cell
+  matrix (nlines == 0 is the live buffer, identical to vterm_copy_buffer).
+  Lets a caller copy text from a scrolled-back view, not just the live screen;
+  freed per row by the caller like vterm_copy_buffer.  Additive.
+
+10.6
+
+Interpreter cursor / erase fixes
+* [Bryan Christ] Single-parameter CUP/HVP (ESC[nH -- row given, column omitted)
+  now defaults the column to 1.  param[] is the shared static csiparam[], whose
+  unparsed slots keep their previous value, so the omitted column was read as the
+  column from an earlier ESC[r;cH -- placing the cursor at a stale column.
+* [Bryan Christ] EL 1 (erase-to-cursor) now clamps its end column to the last
+  real column.  At DEC pending-wrap (ccol == cols) it asked vterm_fill_span to
+  write cells[crow][cols], one cell past the row -- a heap write off the end of
+  the cell block on the bottom row.  (Sibling of the 10.5 cursor dirty-set fix.)
+
+10.5
+
+Interpreter bounds fixes (heap corruption from untrusted child output)
+* [Bryan Christ] DCH (CSI P) now clamps the delete count to the cells from the
+  cursor to the right margin.  An unclamped count > (cols - ccol) drove a
+  negative-index write in the blank-fill loop -- e.g. CSI 999 P on an 80-column
+  screen wrote hundreds of cells before the row buffer.
+* [Bryan Christ] The wnd_update cursor highlight now clamps to the last real
+  column at DEC pending-wrap (ccol == cols).  VCELL_DIRTY_SET(crow, cols)
+  indexed one byte past the row's dirty bitmap for widths that are a multiple
+  of 8 (the common 80-column case) -- a heap write off the end of the dirty
+  block on the bottom row.  The callerless vterm_erase_col got the same guard.
+
+10.4
+
+Scrollback API
+* [Bryan Christ] Add vterm_wnd_scrollback() -- render a scrollback view that
+  composes the newest N evicted history rows above the head of the live
+  standard screen, the way a hardware terminal scrolls back.  Unlike
+  vterm_wnd_update(VTERM_BUF_HISTORY), which can only show whole screens of
+  evicted rows, this reveals fewer-than-one-screen of history against the
+  live buffer.  Additive and ABI-compatible.
+
+10.3
+
+Scrollback API
+* [Bryan Christ] Add vterm_get_history_used() -- the count of history rows
+  actually written (0..capacity), distinct from the ring capacity reported
+  by vterm_get_history_size().  Tracked with a new per-descriptor fill
+  counter; additive and ABI-compatible.
+* [Bryan Christ] Add vterm_get_active_buffer() -- returns VTERM_BUF_STANDARD
+  or VTERM_BUF_ALTERNATE, so a caller can tell when the child has switched
+  to the alternate screen (which has no scrollback).
+
+10.2
+
+Parser / OSC
+* [Bryan Christ] Don't assemble UTF-8 while inside an escape/OSC
+  sequence.  A multibyte glyph carried in an OSC payload (e.g. an xterm
+  window title) was decoded and printed at the cursor instead of
+  accumulating into the escape buffer -- surfacing as stray title-spinner
+  glyphs jittering at the cursor while an app animated its title
+  (Claude Code).
+* [Bryan Christ] Don't treat a bare C1 String Terminator (0x9C) as an
+  OSC terminator in UTF-8 mode.  0x9C is also a UTF-8 continuation byte,
+  so an OSC payload carrying a multibyte glyph -- e.g. a title beginning
+  U+2733 (E2 9C B3) -- terminated mid-character and spilled the remainder
+  onto the screen.  In UTF-8 mode OSC closes only on BEL or ESC-backslash.
+* [Bryan Christ] Claude Code now renders at full fidelity (TESTING.md
+  5/5); both fixes above were surfaced by its UTF-8 title animation.
+
+10.1
+
+Mouse
+* [Bryan Christ] Add VTERM_FLAG_EXTMOUSE.  When set, libvterm treats the
+  host as the owner of the real terminal's mouse: it never touches
+  ncurses' mousemask, only tracks the child's mouse mode and re-encodes
+  the events the host hands it.  Without it, the has_mouse() probe in the
+  mouse driver misfires whenever the host enables mouse via raw escape
+  sequences that bypass ncurses' mask (as vwm does), so libvterm wrongly
+  seizes mousemask(ALL_MOUSE_EVENTS) the moment a child app enables mouse
+  -- breaking the host's own mouse handling.  Default behaviour is
+  unchanged; standalone consumers that don't set the flag still auto-seize
+  as before.
+
+10.0
+
+Color
+* [Bryan Christ] Add --truecolor flag for 24-bit color support.  Sets
+  COLORTERM=truecolor in the child environment so programs that probe
+  for it (vim, htop, mpv, etc.) light up the full RGB path.
+* [Bryan Christ] Add 256-color support: RGB-to-xterm cube/grayscale
+  mapping, pair_select callback so integrators can pin pairs, and a
+  significantly improved color cache.
+* [Bryan Christ] Fix SGR extended color parsing for compound
+  sequences (CSI 38 ; 5 ; n / CSI 38 ; 2 ; r ; g ; b interleaved
+  with other SGR params).
+* [Bryan Christ] Add DECCKM state tracking and OSC 4 palette
+  isolation so per-instance palette tweaks don't leak.
+* [Bryan Christ] Drop dead per-cell color fields and SGR
+  color_content calls; drop unused cie_values field from
+  color_pair_t.
+* [Bryan Christ] Don't zero ncurses color slots on vterm destroy --
+  hosts that share the palette with libvterm no longer lose their
+  colors when an instance shuts down.
+
+Mouse
+* [Bryan Christ] Fix _vterm_write_pty return value and add
+  vterm_write_mouse_event API so embedders can inject mouse reports
+  into the child's PTY.
+* [Bryan Christ] Add pending mouse event injection so GPM wheel
+  events forwarded out-of-band still reach the child cleanly.
+
+Buffer, render, parser
+* [Bryan Christ] Allocate buffer cells in one contiguous block per
+  buffer instead of per-row.  Cuts allocator pressure and improves
+  cache locality on resize-heavy workloads.
+* [Bryan Christ] Move the per-cell dirty flag to a side-table
+  bitmap.  Shrinks the cell struct and makes the "any dirty?" check
+  branch-cheap.
+* [Bryan Christ] Skip redundant dirty walks and width-unchanged
+  reallocs in vterm_buffer_realloc.
+* [Bryan Christ] Add plain-ASCII fast path to vterm_render.
+* [Bryan Christ] Cache the active buffer descriptor pointer.
+* [Bryan Christ] Replace the bit-field UTF-8 decoder with direct
+  byte math.
+* [Bryan Christ] Dispatch escape type once on the first byte, then
+  only suffix-check thereafter.
+* [Bryan Christ] Fold the RS1 scanner into the escape handler and
+  enable the fast path for rxvt.
+* [Bryan Christ] Inline clamp_cursor_to_bounds; drop duplicate
+  DECSTBM guard.
+* [Bryan Christ] Use plain CDL_FOREACH for read-only lookup walks
+  instead of the SAFE variant.
+* [Bryan Christ] Shrink vterm_t: lazy-alloc title; right-size
+  ttyname.
+
+Fixes
+* [Bryan Christ] Fix off-by-one in vterm_buffer_realloc width-grow.
+* [Bryan Christ] Clamp scroll_min on realloc and SD/SU n to the
+  scroll region.
+* [Bryan Christ] Only push to scrollback on a real scroll, and clone
+  the row that disappears (vs. moving it).
+* [Bryan Christ] Fix memory leak.
+
+Build / tooling
+* [Bryan Christ] Enable link-time optimization when the toolchain
+  supports it (CMake CheckIPOSupported probe).  Disabled
+  automatically when ENABLE_BACKTRACE is set so stack frames stay
+  predictable.
+* [Bryan Christ] Add optional backtrace handler via
+  ENABLE_BACKTRACE: installs a fatal-signal handler that writes a
+  glibc backtrace to ./vterm-crash-<pid>.log.
+* [Bryan Christ] Bump to 10.0; drive PROJECT_VERSION (and the
+  pkg-config Version field) from MAJOR_VERSION / MINOR_VERSION so
+  the CMake side has a single source of truth.  LIBVTERM_VERSION in
+  vterm.h remains a hand-edited literal.
+* [Bryan Christ] Add Claude Code to the compatibility list.
+
+9.3
+
+* [Bryan Christ] Added support for anonymous colors which are used by
+  custom color escape codes.
+* [Bryan Christ] Fixes to hi-color rendering
+* [Bryan Christ] Support both modes of ISO-8613-6 color specification
+  (pair number and rgb definitions)
+* [Bryan Christ] Suppprot both colon and semicolon delimters
+  for ISO-8613-6 color.
+
+9.2
+
+* [Bryan Christ] Fixed a scalar out-of-bounds reference in the tab advance
+  cursor code which caused a rare segfault.
+
+9.1
+
+* [Bryan Christ] Fix a nasty segfault.
+
+9.0
+
+* [Bryan Christ] Mark cells that change with a dirty flag and only render
+  those by default when vterm_wnd_update() is called.
+* [Bryan Christ] Properly handle DECSTR CSI for vt220 soft-reset.
+
+8.12
+
+* [Bryan Christ] Refactor the UTF8 decoder for performance, validation,
+  and error handling flexibility.
+
+8.11
+
+* [Bryan Christ] Create a basic framework for error handling.
+
+8.10
+
+* [Bryan Christ] Added --no-utf8 flag to vshell to support turning off the
+  UTF-8 decoder at runtime.
+
+8.9
+
+* [Leon Winter] Improve logic in SGR code (Pull 161).
+
+8.8
+
+* [Leon Winter] Handle distinction of C0 and C1 control characters
+  (Pull 159).
+
+8.7
+
+* [Bryan Christ] Fixed long standing issue with modified keystrokes
+  (Issue 150).
+
+8.6
+
+* [Leon Winter] Refactored lookup / creation of color pairs (Pull 158).
+
+8.5
+
+* [Leon Winter] Fix wrong length comparison in function
+  vterm_osc_parse_xcolor (Pull 157).
+
+8.4
+
+* [Leon Winter] Optimize SGR reset and avoid recursion (Pull 154).
+
+8.3
+
+* [Leon Winter] Add new API call to query cursor position (Pull 156).
+
+8.2
+
+* [Leon Winter] Remove redundant lookups for active buffer (Pull 153).
+
+8.1
+
+* [Leon Winter] Sequences like CSI ; 8 m were counted incorrectly.
+  Regression with underline SGR fixed.  Make vterm_buffer_copy include
+  all color fields.
+
+8.0
+
+* [Bryan Christ] Added an asynchronous IO interface so that libvterm can
+  be driven by SIGIO.  Signals are serialized using the self-pipe trick on
+  a global file descriptor.
+
+7.7
+
+* [Bryan Christ] Assume that whatever fg/bg colors were set before a
+  csi ED is issued are the new default colors.  This seems to make certain
+  erase functions work well with both "bastet" and "pspg".
+
+7.6
+
+* [Bryan Christ] Fixed a debug issue where data buffer was invalid during
+  a raw data dump.
+
+7.5 
+
+* [Bryan Christ] Lots of code optimizations.
+
+7.4
+
+* [Bryan Christ] Eliminated thousands of calls to swprintf which greatly
+  improves performance in many areas of the code.
+
+7.3
+
+* [Bryan Christ] Refactored the demo program to showcase the ease of
+  integration and provide a tmux like experience.
+
+7.2
+
+* [Bryan Christ] Fixed a long-standing bug with MacOS performance.
+
+7.1
+
+* [Bryan Christ] Suppress compiler warnings in a more intuitive way
+  using macro.
+
+7.0
+
+* [Bryan Christ] Added a history buffer / scrollback capabilites to the
+  underlying data structures and API.
+* [Bryan Christ] Updated the vshell demo program to showcase the history
+  buffer features.
+* [Bryan Christ] Refactored the vshell demo program to use wide character
+  routines exclusively.
+* [Bryan Christ] Lots of bugfixes for FreeBSD.
+
+6.22
+
+* [Bryan Christ] Remove some code that wasn't needed addressing some
+  compiler warnings.
+* [Bryan Christ] Sometimes it's useful to know what version of libvterm
+  is running.  Add --help and --version flags to vshell demo program.
+
+6.21
+
+* [Bryan Christ] Don't clip and discard contents of buffer when resizing
+  width.
+* [Bryan Christ] Fix heap corruption issue on FreeBSD which restores proper
+  handling of backspace key, fixes crashes, and restores correct operation
+  of midnight commander.
+
+6.20
+
+* [Bryan Christ] Fixed a bug where ESC-D was not being handled correctly.
+
+6.19
+
+* [Bryan Christ] Fixed a bug which caused a malformed prompt when certain
+  OSC strings were parsed.
+
+6.18
+
+* [Bryan Christ] Fixed a regression in scrolling code which affected
+  several applications including bastet and midnight commander.
+* [Bryan Christ] Don't allow xterm 256 color mode on FreeBSD.
+  It doesn't work.
+
+6.17
+
+* [Bryan Christ] Fixed major heap corruption issues with FreeBSD.
+
+6.16
+
+* [Bryan Christ] Fixed a scrolling bug introduced in 6.15 which was easily
+  surfaced on FreeBSD.
+* [Bryan Christ] Ensure that library and binaries build against ncursesw
+  which is installed from ports.
+
+6.15
+
+* [Bryan Christ] More compatibility fixes based on vttest conformance
+  scenarios.
+* [Bryan Christ] Added saftey checks to safeguard against malformed data
+  streams
+* [Bryan Christ] Moved control char parsing into separate tranlation units.
+* [Bryan Christ] Fixed long-standing issue with vterm_scroll_up() and
+  vterm_scroll_down() API calls.
+* [Bryan Christ] Performanc improvement in scrolling routines.
+
+6.14
+
+* [Bryan Christ] OSC compatibility updates based on vttest conformance
+  sceanrios.
+
+6.13
+
+* [Bryan Christ] Compatibility updates based on vttest conformance
+  scenarios.
+
+6.12
+
+* [Bryan Christ] Build fixes for Mac OS.
+
+6.11
+
+* [Bryan Christ] Enable replies back to Device Attribute send requests
+  in all emulation modes except Linux.
+
+6.10
+
+* [Bryan Christ] Tweak the DCH code so that it mimics xterm exactly on
+  such operation.
+
+6.9
+
+* [Bryan Christ] Rewrite the csi DCH code so that is more accurate and the 
+  output is similar to other emulators.  DCH code is now more simple and
+  faster.
+* [Bryan Christ] Add framework for csi IRM code.  Currently unused. 
+
+6.8
+
+* [Bryan Christ] Fixed an issue where multiple instances could trample the
+  key map tables of their siblings.
+* [Bryan Christ] Update the API to accomodate an csi EL corner-case which
+  manifested in nano.
+
+6.7
+
+* [Bryan Christ] Implement a shared resource mechanism to make sure that the
+  mouse works correctly in a standalone environement and when shared with
+  other instances of libvterm. 
+
+6.6
+
+* [Bryan Christ] Better handling of scroll mouse.
+* [Bryan Christ] Fix a long standing issue with scroll up and scroll
+  down CSI commands.
+* [Bryan Christ] Minor bug fix with erase row routine.
+
+6.5
+
+* [Bryan Christ] Clean-up codebase related to mouse drivers and separate
+  them into distinct files for easier support.
+* [Bryan Christ] Handle Alternate Scroll mechanism in SGR mouse mode.
+
+6.4
+
+* [Bryan Christ] Added dynamic support for extended keycode mappings.  This
+  enables combinations such as ctrl-home and ctrl-end on terminals modes
+  that support it (such as xterm).
+
+6.3                                                                             
+                                                                                
+* [Bryan Christ] Make xterm 256 color mode the default if the underlying        
+  terminal supports it.                                                         
+* [Bryan Christ] Fixed a bug introduced with 16-color mode support.             
+* [Bryan Christ] Added logic to detect terminals with broken capabilites        
+  of certain attributes with color.
+
+6.2
+
+* [Bryan Christ] Simplify and reduce footprint of pty write functions.
+
+6.1
+
+* [Bryan Christ] Expand basic mouse support to rxvt and linux emulation
+  modes.
+
+6.0
+
+* [Bryan Christ] Introduced support for mouse operations with Button 1 and
+  the mouse wheel.  The mouse driver currently supports the X10 and SGR
+  protocols which are the most common.  Support is for xterm emulation
+  mode only.
+
+5.15
+
+* [Bryan Christ] Fixed a type size issue that was discarding flags with
+  bit values beyond the 16 bit range.
+
+5.14
+
+* [Bryan Christ] Support 16 colors when the underlying terminal has the
+  capability to support it.
+* [Bryan Christ] Fixed some bugs with highcolor mode.
+* [Bryan Christ] Added a flag to cause emulation of 16 color mode using
+  the hicolor palette.
+* [Bryan Christ] Added --c16 flag to demo program to invoke 16 color
+  emulation mode.
+
+5.13
+
+* [Bryan Christ] Improve color math routines.
+* [Bryan Christ] Manage the global color table better to reduce pair
+  and custom color collisions.
+* [Bryan Christ] Fix up the internal color cache API and move them
+  to a different namespace and convention.
+
+5.12
+
+* [Bryan Christ] Fix color bug properly as it should have been in 5.11
+  but wasn't.
+
+5.11
+
+* [Bryan Christ] Fixed a long-standing color issue which surfaced on
+  FreeBSD.
+
+5.10
+
+* [Bryan Christ] Make xterm the default emulation mode instead of rxvt.
+
+5.09
+
+* [Bryan Christ] Fix attribute handling on Mac OS.
+* [Bryan Christ] Optimized UTF-8 rendering code to save CPU cycles and
+  reduce code complexity.
+
+5.08
+
+* [Bryan Christ] Fix line-art (ACS) handling on Mac OS.
+
+
+5.07
+
+* [Bryan Christ] Fix color handing on Mac OS with wide characters.
+
+5.06
+
+* [Bryan Christ] Ported the library to run on Mac OS (ported and tested
+  on Mojave).
+
+5.05
+
+* [Bryan Christ] Tweak the demo program to better mimic what a real-world
+  implementation would look like.
+* [Bryan Christ] Fixed invalid logic operator in CMake script.
+
+5.04
+
+* [Bryan Christ] Enable building on FreeBSD (version 12).
+* [Bryan Christ] Updated build instructions.
+
+5.03
+
+* [Bryan Christ] Fix bug in demo program with title bar.
+
+5.02
+
+* [Bryan Christ] Additional clean-up after adding linux term type
+  compatibility mode.
+* [Bryan Christ] Added stubs for bracketed paste mode.
+* [Bryan Christ] Moved standard CSI decoding to a separate file and forced
+  the compiler to create a jump table.
+* [Bryan Christ] Updated TESTING document with findings from testing
+  linux mode.
+
+5.01
+
+* [Bryan Christ] Code cleanup and refactoring from linux compatibility mode.
+
+5.00
+
+* [Bryan Christ] Initial release with support for terinfo "linux" type
+  emulation -- currently regarded as alpha state.
+
+4.47
+
+* [Bryan Christ] Implement reply to OSC DA (device attribute) request
+  as prepatory work for terminfo "linux" compatibility mode.
+
+4.46
+
+* [Bryan Christ] Force gcc to create jump tables instead of conditional
+  branching in some places and optimize vterm_scroll_down.
+
+4.45
+
+* [Bryan Christ] Changed to a subscriber model for the event hook interface
+  to provide more events with less impact on performance.
+
+4.44
+
+* [Bryan Christ] Added event hooks to notify integrator when there is a
+  change in buffer or the screen is cleared.
+
+4.43
+
+* [Bryan Christ] Fixed a nasty bug that was uncovered in the erase routines
+  when underline attributes were properly implemented.
+
+4.42
+
+* [Bryan Christ] Replaced some scalar computations and reptitive in-loop
+  computations picking for improved performance.
+
+4.41
+
+* [Bryan Christ] Handle SGR codes more precisely which yields better rending
+  on some terminals.  Remove unused code saving instruction cycles.
+
+4.40
+
+* [Bryan Christ] Update color copy macro to make sure that foreground and
+  background RGB values are always written to the matrix cell.
+
+4.39
+
+* [Bryan Christ] Fixed a SIGWINCH signal loop that would occur when running
+  in NOPTY mode.
+
+4.38
+
+* [Bryan Christ] Optimize export of matrix and for external use.
+
+4.37
+
+* [Bryan Christ] Export RGB values in data structure for external use where
+  a WINDOW type is not the primary raster.
+
+4.36
+
+* [Bryan Christ] Refactor the code that exports a matrix of cells for use
+  in other contexts.
+
+4.34
+
+* [Bryan Christ] Use a jump table for the simple escape sequences.
+
+4.33
+
+* [Bryan Christ] Added support for escape sequences NEL and RI after running
+  vttest for fidelity.
+
+4.32
+
+* [Bryan Christ] Prevent vterm_add_color_pair() from going into an infinite
+  loop when there are severe palette constraints.
+
+4.31
+
+* [Bryan Christ] Fixed a regression where sinking the mouse click event
+  should occur but wasn't.
+
+4.30
+
+* [Bryan Christ] More improvements to xterm-256color mode.
+
+4.29
+
+* [Bryan Christ] Fix broken RS1 logic with xterm and xterm-256color modes.
+* [Bryan Christ] Make RS1 reset to default color palette.
+
+4.28
+
+* [Bryan Christ] Fix SGR reset regression introduced in hicolor changes.
+
+4.27
+
+* [Bryan Christ] First set of changes for hicolor support and emulation of
+  xterm-256color mode.
+
+4.26
+
+* [Bryan Christ] Fixed mapping of HOME and END keys when operating in
+  xterm mode.
+
+4.25
+
+* [Bryan Christ] Added logic to make sure cursor becomes visible after a
+  RS1 (reset command) issued in xterm mode.
+
+4.24
+
+* [Bryan Christ] Fix a memory leak.
+* [Bryan Christ] Performance improvements to escape parsing engine.
+* [Bryan Christ] Preliminary work for supporting more than 8 colors.
+
+4.23
+
+* [Bryan Christ] Fix support of "dim" attribute in xterm emulation mode.
+
+4.22
+
+* [Bryan Christ] Added csi SD and SU support for xterm mode.
+
+4.21
+
+* [Bryan Christ] Added csi CBT for xterm mode.
+
+4.20
+
+* [Bryan Christ] Fixed a bug with OSC string copy routine.
+* [Bryan Christ] Start using A_DIM on SGR code 2.
+
+4.19
+
+* [Bryan Christ] Added handling of U8 OSC user defined string emitted by
+  libvte on Fedora 29.
+
+4.18
+
+* [Bryan Christ] Make color mapping and caching dynamic.  The libary shouln't
+  have to know about the internals of the program that it's integrated with.
+* [Bryan Christ] Refactored the caching code which improved performance
+  another 5% - 10% under heavy loads.
+
+4.17
+
+* [Bryan Christ] Prelinary support for masquerading as xterm.
+
+4.16
+
+* [Bryan Christ] Implemented color caching system which yields anywhere
+  from 5% - 500% preformance improvement depending on conditions.
+
+4.15
+
+* [Bryan Christ] Copy multibyte data into a wchar_t that is exposed
+  externally for use outside the library.
+
+4.14
+
+* [Bryan Christ] Fixed a bug that was introduced in version 4.12 which was
+  manifest when using bash history with the arrow keys.
+
+4.13
+
+* [Bryan Christ] Make csi DCH faster.
+
+4.12
+
+* [Bryan Christ] Make csi ICH faster.
+
+4.11
+
+* [Bryan Christ] Make erase operations faster.
+
+4.10
+
+* [Bryan Christ] Make csi DL faster.
+* [Bryan Christ] Fix bug with csi IL introduced on previous version.  
+
+4.9
+
+* [Bryan Christ] Make csi IL faster.
+
+4.8
+
+* [Bryan Christ] Add APIs to externalize color mapping interfaces so that
+  external programs can access them.
+
+4.7
+
+* [Bryan Christ] Make color pair extraction more opaque and give more
+  control to caller.  This also fixes a performance problem seen
+  on Fedora 29 where ncursesw pair_content() is about 7x slower.
+
+4.6
+
+* [Bryan Christ] Make color indexing more opaque and give more control
+  to caller.  Results in about a 10 percent performance gain over the
+  default functions when used correctly.
+
+4.5
+
+* [Bryan Christ} Make writes to wnd from matrix faster.
+
+4.4
+
+* [Bryan Christ] Handle control character for tab stops
+  correctly.
+
+4.3
+
+* [Bryan Christ] Add TERM PRESIZE event hook to signal when the terminal
+  is about to be resized.
+
+4.2
+
+* [Bryan Christ] Handle csi for absolute cursor address movement.
+
+4.1
+
+* [Bryan Christ] Properly handle crazy RS1 reset sequence emitted by rxvt.
+
+4.0
+
+* [Bryan Christ] Full support for UTF-8 encoded Unicode.
+
+3.12
+
+* [Bryan Christ] make libvterm build and link against the wide version of
+  ncurses (ncursesw.h) as a step toward full utf8 support.
+
+3.11
+
+* [Bryan Christ] make read size a multiple of PIPE_BUF to minimize child
+  process blocking.
+
+3.10
+
+* [Bryan Christ] make the utf8 decoder more robust, easier to read, an
+  possibly a little bit faster.
+
+3.9
+
+* [Bryan Christ] map utf8 double line drawing codes to ACS similars.
+
+3.8
+
+* [Bryan Christ] use clues from Bash to detect and handle if a program
+  crashes while in alternate buffer mode.
+
+3.7
+
+* [Bryan Christ] added a hook system for programs that need to know when
+  certain events have transpired and need to take action.
+* [Bryan Christ] copied in some color routines into demo program to make
+  it easier to use and more educational for the reader.
+* [Bryan Christ] some code to use new hook system in demo program.
+
+3.6
+
+* [Bryan Christ] mimic unicode "middle-tee" with ACS_PLUS.
+
+3.5
+
+* [Bryan Christ] Make ICH CSI behave correctly.
+
+3.4
+
+* [Bryan Christ] If the terminal was resized while in alternate buffer
+  mode, the standard buffer needs to be resized accordingly when alternate
+  mode terminates.
+
+3.3
+
+* [Bryan Christ] Fixed a SEGV caused by massive ICH moves.  Implemented as
+  a workaround.  Full fix later.
+
+3.2
+
+* [Bryan Christ] Fixed a SEGV caused by high-velocity applications which
+  made malloc blow up.
+
+3.1
+
+* [Bryan Christ] Fix a double-free situation.
+
+3.0
+
+* [Bryan Christ] Added support for multiple buffers.
+* [Bryan Christ] Improved handling of OSC codes including a new API for
+  fetching window title.
+* [Bryan Christ] Performance improvements in parsing systems.
+* [Bryan Christ] Bugfixes.
+* [Bryan Christ] Update demo program for showcase and testing.
+
+2.5
+
+* [Bryan Christ] Fixed some compiler warnings and improperly typed functions
+  in demo program.
+
+2.4
+
+* [Bryan Christ] Implement trapping of cursor save and cursor restore CSI
+  codes which makes the 'apt' package manager output more pleasant.
+* [Bryan Christ] Added reference documentation folder so others can
+  follow along.
+
+2.3
+
+* [Bryan Christ] Added more API documentation.
+* [Bryan Christ] Update demo program to handle resizing.
+* [Bryan Christ] Added new interface for granular resizing and a macro
+  to preserve the simpler interface.
+
+2.2
+
+* [Bryan Christ] Make vshell window size vary according to the size of the
+  terminal it's running in.
+* [Bryan Christ] Fix a long-standing bug with the bold attribute.
+
+2.1
+
+* [Bryan Christ] set (or clear) COLORTERM environment variable depending
+  on init flags.
+
+2.0
+
+* [Bryan Christ] API change that enables caller to pass in an alternate
+  binary path which uses execv() to launch.  In compliment to this change
+  the vshell demo program was updated with a --exec paramenter to support
+  passing in programs from the command line.
+
+1.13
+
+* [Bryan Christ] added --vt100 command line parameter for vshell demo program.
+
+1.12
+
+* [Bryan Christ] modified build so that curses can be intentionally
+  ignored by specifiying 'cmake -DDEFINE_CURSES=OFF'
+
+1.11
+
+* [Bryan Christ] improved SGR handling of colors and attributes which
+  improves cdw and myman compatibility.
+
+1.10
+
+* [Bryan Christ] convert to CMake build system
+
+1.00
+
+* [Bryan Christ] fixed a long standing bug in the newline code.  Iit was an
+  easy fix but it took me clearing the forest to see the tree.  libterm now
+  works great with every piece of test software except some utf-8 glyphs
+  don't show.
+
+0.99.16
+
+* [Bryan Christ] security fix to prevent recursion bomb that was introduced
+  in 0.99.15
+
+0.99.15
+
+* [Bryan Christ] better handling of SGR reset code
+
+0.99.14
+
+* [Bryan Christ] added primitive support for UTF-8 handling.
+
+0.99.13
+
+* [Bryan Christ] fixed attribute issue with SGR color setting.  improves
+  compatibility with myman and iptraf.
+
+0.99.12
+
+* [Bryan Christ] fixed attribute issue with SGR foreground color reset
+  and SGR background color reset.
+
+0.99.11
+
+* [Idan Shoham] clean up code and make allow stream buffer output
+  instead of NCURSES.
+
+0.99.10
+
+*  [Bryan Christ] fixed the backspace key for getline() and other tools
+   that modify terminal attributes.
+
+0.99.9
+
+*  [Bryan Christ] updated the code to support Xterm OSC sequences
+*  [Bryan Christ] major rework of the escape code sequence parser systems
+
+0.99.8
+
+*  [Bryan Christ] simplified permission assignment in Makefile
+*  [Bryan Christ] modified Makefile to comprehend host arch
+
+0.99.7
+
+*  [Bryan Christ] fixed functions keys
+
+0.99.6
+
+*  [Bryan Christ] execl() shell/bash with -l option
+
+0.99.5
+
+*  [Bryan Christ] Updates and changes to this CHANGELOG format
+*  [Bryan Christ] Bugfix for handling KEY_HOME, KEY_END,and KEY_IC
+
+0.99.4
+
+*  [Bryan Christ] Missing include signal.h added to vterm.c and
+   vterm_resize.c
+
+0.99.3
+
+*  [Bryan Christ] Added vterm_get_ttyname() function
+
+0.99.2
+
+*  [Bryan Christ] Properly handle system call interupt (EINTR) in
+   vterm_pipe_read()
+*  [Bryan Christ] Fixed ioctl call in vterm_pipe_read
+*  [Bryan Christ] Added vterm_resize()
+*  [Bryan Christ] Added missing symbol vterm_erase()
+*  [Bryan Christ] Added vterm_erase_cols() and vterm_erase_rows() to API
+*  [Bryan Christ] Fixed incorrect version string for LIBVTERM_VERSION
+*  [Bryan Christ] Created API documentation
+
+0.99.1
+
+*  [Bryan Christ] Added terminal resize function
+*  [Bryan Christ] Moved generic helper functions to vterm_misc.c
+
+0.99.0
+
+*  [Bryan Christ] Initial release of libvterm
+
+

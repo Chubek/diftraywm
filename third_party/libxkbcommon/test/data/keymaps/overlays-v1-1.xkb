@@ -1,0 +1,33 @@
+xkb_keymap {
+xkb_keycodes {
+	minimum = 8;
+	maximum = 255;
+	<j>                  = 44;
+	<kp1>                = 87;
+	<left>               = 113;
+};
+
+xkb_types {
+	type "ONE_LEVEL" {
+		modifiers= none;
+	};
+};
+
+xkb_compatibility {
+	interpret.useModMapMods= AnyLevel;
+	interpret.repeat= False;
+	interpret VoidSymbol+AnyOfOrNone(none) {
+		action= NoAction();
+	};
+};
+
+xkb_symbols {
+	key <j>                  {
+		overlay1= <kp1>,
+		symbols[1]= [               j ]
+	};
+	key <kp1>                {	[            KP_1 ] };
+	key <left>               {	[            Left ] };
+};
+
+};

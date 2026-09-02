@@ -1,0 +1,183 @@
+# Extracted Enums from: include/xkbcommon/xkbcommon.h
+
+xkb_rmlvo_builder_flags:
+  - name: XKB_RMLVO_BUILDER_NO_FLAGS
+    value: 0
+xkb_keysym_flags:
+  - name: XKB_KEYSYM_NO_FLAGS
+    value: 0
+  - name: XKB_KEYSYM_CASE_INSENSITIVE
+    value: 1
+xkb_context_flags:
+  - name: XKB_CONTEXT_NO_FLAGS
+    value: 0
+  - name: XKB_CONTEXT_NO_DEFAULT_INCLUDES
+    value: 1
+  - name: XKB_CONTEXT_NO_ENVIRONMENT_NAMES
+    value: 2
+  - name: XKB_CONTEXT_NO_SECURE_GETENV
+    value: 4
+xkb_log_level:
+  - name: XKB_LOG_LEVEL_CRITICAL
+    value: 10
+  - name: XKB_LOG_LEVEL_ERROR
+    value: 20
+  - name: XKB_LOG_LEVEL_WARNING
+    value: 30
+  - name: XKB_LOG_LEVEL_INFO
+    value: 40
+  - name: XKB_LOG_LEVEL_DEBUG
+    value: 50
+xkb_keymap_compile_flags:
+  - name: XKB_KEYMAP_COMPILE_NO_FLAGS
+    value: 0
+  - name: XKB_KEYMAP_COMPILE_STRICT_MODE
+    value: 1
+xkb_keymap_format:
+  - name: XKB_KEYMAP_FORMAT_TEXT_V1
+    value: 1
+  - name: XKB_KEYMAP_FORMAT_TEXT_V2
+    value: 2
+xkb_keymap_serialize_flags:
+  - name: XKB_KEYMAP_SERIALIZE_NO_FLAGS
+    value: 0
+  - name: XKB_KEYMAP_SERIALIZE_PRETTY
+    value: 1
+  - name: XKB_KEYMAP_SERIALIZE_KEEP_UNUSED
+    value: 2
+  - name: XKB_KEYMAP_SERIALIZE_STRICT_MODE
+    value: 4
+  - name: XKB_KEYMAP_SERIALIZE_EXPLICIT_DEFAULT_VALUES
+    value: 8
+  - name: XKB_KEYMAP_SERIALIZE_EXPLICIT_VMODS
+    value: 16
+  - name: XKB_KEYMAP_SERIALIZE_EXPLICIT_KEY_VALUES
+    value: 32
+xkb_keymap_key_iterator_flags:
+  - name: XKB_KEYMAP_KEY_ITERATOR_NO_FLAGS
+    value: 0
+  - name: XKB_KEYMAP_KEY_ITERATOR_DESCENDING_ORDER
+    value: 1
+  - name: XKB_KEYMAP_KEY_ITERATOR_SKIP_UNBOUND
+    value: 2
+xkb_event_type:
+  - name: XKB_EVENT_TYPE_KEY_DOWN
+    value: 1
+  - name: XKB_EVENT_TYPE_KEY_REPEATED
+    value: 2
+  - name: XKB_EVENT_TYPE_KEY_UP
+    value: 3
+  - name: XKB_EVENT_TYPE_COMPONENTS_CHANGE
+    value: 4
+  - name: XKB_EVENT_TYPE_POINTER_MOTION
+    value: 5
+  - name: XKB_EVENT_TYPE_POINTER_BUTTON
+    value: 6
+xkb_state_component:
+  - name: XKB_STATE_MODS_DEPRESSED
+    value: 1
+  - name: XKB_STATE_MODS_LATCHED
+    value: 2
+  - name: XKB_STATE_MODS_LOCKED
+    value: 4
+  - name: XKB_STATE_MODS_EFFECTIVE
+    value: 8
+  - name: XKB_STATE_LAYOUT_DEPRESSED
+    value: 16
+  - name: XKB_STATE_LAYOUT_LATCHED
+    value: 32
+  - name: XKB_STATE_LAYOUT_LOCKED
+    value: 64
+  - name: XKB_STATE_LAYOUT_EFFECTIVE
+    value: 128
+  - name: XKB_STATE_LEDS
+    value: 256
+  - name: XKB_STATE_CONTROLS
+    value: 512
+xkb_keyboard_control_flags:
+  - name: XKB_KEYBOARD_CONTROL_NO_FLAGS
+    value: 0
+  - name: XKB_KEYBOARD_CONTROL_A11Y_STICKY_KEYS
+    value: 1
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY1
+    value: 2
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY2
+    value: 4
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY3
+    value: 8
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY4
+    value: 16
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY5
+    value: 32
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY6
+    value: 64
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY7
+    value: 128
+  - name: XKB_KEYBOARD_CONTROL_OVERLAY8
+    value: 256
+  - name: XKB_KEYBOARD_CONTROL_MOUSE_KEYS
+    value: 16384
+xkb_pointer_motion_flags:
+  - name: XKB_POINTER_MOTION_NO_FLAGS
+    value: 0
+  - name: XKB_POINTER_MOTION_REPEATS
+    value: 1
+  - name: XKB_POINTER_MOTION_ABSOLUTE_X
+    value: 2
+  - name: XKB_POINTER_MOTION_ABSOLUTE_Y
+    value: 4
+xkb_pointer_button_direction:
+  - name: XKB_POINTER_BUTTON_DOWN
+    value: 1
+  - name: XKB_POINTER_BUTTON_UP
+    value: 2
+  - name: XKB_POINTER_BUTTON_CLICK
+    value: 3
+xkb_events_flags:
+  - name: XKB_EVENTS_NO_FLAGS
+    value: 0
+xkb_machine_builder_flags:
+  - name: XKB_MACHINE_BUILDER_NO_FLAGS
+    value: 0
+xkb_a11y_flags:
+  - name: XKB_A11Y_NO_FLAGS
+    value: 0
+  - name: XKB_A11Y_STICKY_KEYS_NO_SIMULTANEOUS_KEYS
+    value: 1
+  - name: XKB_A11Y_STICKY_KEYS_LATCH_TO_LOCK
+    value: 2
+  - name: XKB_A11Y_LATCH_SIMULTANEOUS_KEYS
+    value: 4
+xkb_key_direction:
+  - name: XKB_KEY_UP
+    value: 0
+  - name: XKB_KEY_DOWN
+    value: 1
+  - name: XKB_KEY_REPEATED
+    value: 2
+xkb_layout_out_of_range_policy:
+  - name: XKB_LAYOUT_OUT_OF_RANGE_WRAP
+    value: 0
+  - name: XKB_LAYOUT_OUT_OF_RANGE_CLAMP
+    value: 1
+  - name: XKB_LAYOUT_OUT_OF_RANGE_REDIRECT
+    value: 2
+xkb_state_mode:
+  - name: XKB_STATE_MODE_CLIENT
+    value: 0
+  - name: XKB_STATE_MODE_SERVER_QUERY
+    value: 1
+  - name: XKB_STATE_MODE_SERVER
+    value: 2
+xkb_state_match:
+  - name: XKB_STATE_MATCH_ANY
+    value: 1
+  - name: XKB_STATE_MATCH_ALL
+    value: 2
+  - name: XKB_STATE_MATCH_NON_EXCLUSIVE
+    value: 65536
+xkb_consumed_mode:
+  - name: XKB_CONSUMED_MODE_XKB
+    value: 0
+  - name: XKB_CONSUMED_MODE_GTK
+    value: 1
