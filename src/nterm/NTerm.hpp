@@ -19,6 +19,10 @@ public:
   explicit NTerm(std::string shell_override = {});
   ~NTerm();
 
+  bool start();
+  void stop();
+  bool running() const;
+  const std::string &last_error() const;
   void on_readable();
   void resize(std::size_t columns, std::size_t rows);
   void feed_input(std::string_view bytes);
@@ -44,4 +48,6 @@ private:
   std::size_t rows_ = 24;
   std::deque<std::string> scrollback_;
   std::string input_buffer_;
+  std::string last_error_;
+  bool running_ = false;
 };

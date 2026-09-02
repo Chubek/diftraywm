@@ -70,9 +70,10 @@ bool NCursorView::insert_cell(Cell *cell, bool above) {
   auto &stack = cell_stacks_[selected_stack_index_];
   const std::size_t index = stack.cells.empty() ? 0 : std::min(stack.active_index, stack.cells.size() - 1);
   const auto insert_at = above ? static_cast<std::ptrdiff_t>(index) : static_cast<std::ptrdiff_t>(index + 1);
-  const auto pos = stack.cells.begin() + std::min<std::ptrdiff_t>(insert_at, static_cast<std::ptrdiff_t>(stack.cells.size()));
-  stack.cells.insert(pos, cell);
-  stack.active_index = static_cast<std::size_t>(std::distance(stack.cells.begin(), pos));
+  const auto insertion_index = static_cast<std::size_t>(
+      std::min<std::ptrdiff_t>(insert_at, static_cast<std::ptrdiff_t>(stack.cells.size())));
+  stack.cells.insert(stack.cells.begin() + static_cast<std::ptrdiff_t>(insertion_index), cell);
+  stack.active_index = insertion_index;
   selected_cell_index_ = static_cast<int>(stack.active_index);
   return true;
 }

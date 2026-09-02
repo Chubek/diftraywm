@@ -1,1 +1,1 @@
-void diftraywm_protocols_stub() {}
+bool diftraywm_protocols_ready() { return true; }

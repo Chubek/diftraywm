@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+
+runtime_dir=${XDG_RUNTIME_DIR:-/tmp/diftray-runtime}
+if [ ! -d "$runtime_dir" ]; then
+	mkdir -p "$runtime_dir"
+	chmod 700 "$runtime_dir"
+fi
+
+XDG_RUNTIME_DIR="$runtime_dir" \
+	WLR_BACKENDS=headless \
+	WLR_HEADLESS_OUTPUTS=1 \
+	WLR_RENDERER=pixman \
+	./build/diftray

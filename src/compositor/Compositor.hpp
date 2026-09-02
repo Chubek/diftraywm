@@ -2,12 +2,15 @@
 
 #include "command/CommandBar.hpp"
 #include "command/CommandContext.hpp"
+#include "config/Config.hpp"
 
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 struct wl_display;
+struct wl_event_source;
 struct wlr_backend;
 struct wlr_renderer;
 struct wlr_allocator;
@@ -15,6 +18,7 @@ struct wlr_output_layout;
 struct wlr_scene;
 struct wlr_seat;
 struct wlr_output;
+struct diftray_wayland_runtime;
 
 class View;
 class Cell;
@@ -56,6 +60,7 @@ public:
 
   bool init();
   int run();
+  void stop();
   void set_active_view(View *view);
   std::string spawn_cell(bool above);
   std::string kill_selected_cell();
@@ -79,6 +84,12 @@ private:
   Cell *active_cell() const;
   NCursorView *ncursor_view() const;
   GCursorView *active_gcursor() const;
+  void refresh_terminal_display();
+  static int terminal_fd_ready(int fd, uint32_t mask, void *data);
+  static void terminal_key_received(void *userdata, uint32_t keysym,
+                                    uint32_t modifiers, uint32_t state);
+  void handle_terminal_key(uint32_t keysym, uint32_t modifiers,
+                           uint32_t state);
   void rebuild_command_context();
   std::string erase_cell(Cell *cell);
 
@@ -103,4 +114,9 @@ private:
   std::vector<View *> views_;
   std::vector<Input *> inputs_;
   View *active_view_ = nullptr;
+  bool running_ = false;
+  wl_event_source *terminal_source_ = nullptr;
+  std::string wayland_socket_;
+  diftray_wayland_runtime *wayland_runtime_ = nullptr;
+  CompositorConfig config_;
 };

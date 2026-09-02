@@ -45,6 +45,15 @@ bool CursorArea::assign_slot(GCursorView *view, int slot) {
   if (!view || slot < 0 || slot >= static_cast<int>(quick_restore_slots_.size())) {
     return false;
   }
+  for (auto &assigned : quick_restore_slots_) {
+    if (assigned == view) {
+      assigned = nullptr;
+    }
+  }
+  if (quick_restore_slots_[static_cast<std::size_t>(slot)] &&
+      quick_restore_slots_[static_cast<std::size_t>(slot)] != view) {
+    quick_restore_slots_[static_cast<std::size_t>(slot)]->set_quick_restore_slot(std::nullopt);
+  }
   quick_restore_slots_[static_cast<std::size_t>(slot)] = view;
   view->set_quick_restore_slot(slot);
   return true;

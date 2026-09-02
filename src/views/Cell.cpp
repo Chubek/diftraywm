@@ -9,18 +9,26 @@
 #include <unordered_set>
 
 namespace {
+std::unordered_set<std::string> &live_cell_ids() {
+  static std::unordered_set<std::string> ids;
+  return ids;
+}
+
 std::string make_cell_id() {
   static std::mt19937_64 rng{std::random_device{}()};
-  static std::unordered_set<std::string> live_ids;
   for (int attempts = 0; attempts < 32; ++attempts) {
     std::ostringstream out;
     out << std::hex << rng();
     const auto id = out.str();
-    if (live_ids.insert(id).second) {
+    if (live_cell_ids().insert(id).second) {
       return id;
     }
   }
   return "cell";
+}
+
+void release_cell_id(const std::string &id) {
+  live_cell_ids().erase(id);
 }
 }
 
@@ -28,7 +36,7 @@ Cell::Cell(std::string shell_override)
     : id_(make_cell_id()), nterm_(std::make_unique<NTerm>(std::move(shell_override))),
       shell_override_(nterm_->shell_path()) {}
 
-Cell::~Cell() = default;
+Cell::~Cell() { release_cell_id(id_); }
 
 const std::string &Cell::id() const { return id_; }
 const wlr_box &Cell::box() const { return box_; }
