@@ -27,3 +27,8 @@ target_link_libraries(diftraywm_help_pager_test PRIVATE diftraywm_command)
 target_compile_definitions(diftraywm_help_pager_test PRIVATE
   DIFTRAY_HELP_TEST_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../help")
 add_test(NAME diftraywm_help_pager_test COMMAND diftraywm_help_pager_test)
+
+add_executable(diftraywm_nterm_display_test nterm_display.cpp)
+diftraywm_target_defaults(diftraywm_nterm_display_test)
+target_link_libraries(diftraywm_nterm_display_test PRIVATE diftraywm_nterm)
+add_test(NAME diftraywm_nterm_display_test COMMAND diftraywm_nterm_display_test)

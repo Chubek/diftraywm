@@ -162,7 +162,33 @@ void NTerm::feed_parsers(std::string_view bytes) {
   dirty_ = true;
 }
 
-void NTerm::display(std::string_view bytes) { feed_parsers(bytes); }
+void NTerm::display(std::string_view bytes) {
+  if (bytes.empty()) {
+    return;
+  }
+  // Shell output arrives through on_readable(), where the tty line discipline
+  // has already turned "\n" into "\r\n".  Compositor-injected content -- the
+  // help pager and notelet frames -- bypasses the tty, and libtsm is a bare VT
+  // parser: a bare LF linefeeds without returning the cursor to column 0, so
+  // every line would start indented by the width of the one before it.  Add
+  // the carriage return here so callers can just use "\n".
+  const std::size_t first_newline = bytes.find('\n');
+  if (first_newline == std::string_view::npos ||
+      (first_newline > 0 && bytes[first_newline - 1] == '\r')) {
+    feed_parsers(bytes);
+    return;
+  }
+  std::string normalised;
+  normalised.reserve(bytes.size() + 16);
+  for (std::size_t index = 0; index < bytes.size(); ++index) {
+    const char ch = bytes[index];
+    if (ch == '\n' && (normalised.empty() || normalised.back() != '\r')) {
+      normalised.push_back('\r');
+    }
+    normalised.push_back(ch);
+  }
+  feed_parsers(normalised);
+}
 
 void NTerm::on_readable() {
   if (master_fd_ < 0) {
