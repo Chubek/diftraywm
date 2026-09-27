@@ -137,6 +137,24 @@ bool load_compositor_config(const std::string &path, CompositorConfig &config,
       config.word_pool = value;
     } else if (key == "theme") {
       config.theme = value;
+    } else if (key == "help_path") {
+      config.help_path = value;
+    } else if (key == "help_key_close") {
+      config.help_key_close = value;
+    } else if (key == "help_key_search") {
+      config.help_key_search = value;
+    } else if (key == "help_key_next") {
+      config.help_key_next = value;
+    } else if (key == "help_key_previous") {
+      config.help_key_previous = value;
+    } else if (key == "help_key_page_down") {
+      config.help_key_page_down = value;
+    } else if (key == "help_key_page_up") {
+      config.help_key_page_up = value;
+    } else if (key == "help_key_line_down") {
+      config.help_key_line_down = value;
+    } else if (key == "help_key_line_up") {
+      config.help_key_line_up = value;
     }
   }
   return true;

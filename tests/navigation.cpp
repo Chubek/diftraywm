@@ -104,5 +104,18 @@ int main() {
     std::cerr << "Meta+0 did not switch to workspace 10\n";
     return EXIT_FAILURE;
   }
+
+  if (!compositor.command_bar().dispatch("h help-pager") ||
+      !compositor.help_pager_active() || compositor.help_page_name() != "help-pager" ||
+      !compositor.command_bar().dispatch("help find pager") ||
+      compositor.command_bar().status_line().find("matching lines") == std::string::npos ||
+      !compositor.command_bar().dispatch("help bookmark-set manual") ||
+      !compositor.command_bar().dispatch("help notelets") ||
+      !compositor.command_bar().dispatch("help bookmark-open manual") ||
+      compositor.help_page_name() != "help-pager") {
+    std::cerr << "help command integration failed: " << compositor.command_bar().status_line()
+              << '\n';
+    return EXIT_FAILURE;
+  }
   return EXIT_SUCCESS;
 }

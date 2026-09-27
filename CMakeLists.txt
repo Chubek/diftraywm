@@ -58,7 +58,7 @@ if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}")
     "not exist. Restore the vendored trees described in AGENTS.md section 11.")
 endif()
 
-set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL)
+set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL oniguruma)
 set(_diftraywm_vendored_missing "")
 foreach(_dep IN LISTS _diftraywm_vendored_required)
   if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}/${_dep}")
@@ -180,6 +180,14 @@ add_dependencies(wlroots::wlroots wlroots_ep)
 # companions that notelets import at run time.
 add_subdirectory("${DIFTRAY_THIRD_PARTY}/domterm"
                  "${CMAKE_CURRENT_BINARY_DIR}/domterm")
+
+# Help-page searches use the vendored Oniguruma implementation.  Keep its own
+# test suite out of the compositor build; DiftrayWM covers its integration in
+# tests/help_pager.cpp.
+set(BUILD_TEST OFF CACHE BOOL "Build Oniguruma's upstream test suite" FORCE)
+set(INSTALL_DOCUMENTATION OFF CACHE BOOL "Install Oniguruma upstream documentation" FORCE)
+add_subdirectory("${DIFTRAY_THIRD_PARTY}/oniguruma"
+                 "${CMAKE_CURRENT_BINARY_DIR}/oniguruma" EXCLUDE_FROM_ALL)
 
 # ---------------------------------------------------------------------------
 # libvterm
@@ -350,7 +358,8 @@ add_library(diftraywm_compositor STATIC
 )
 diftraywm_target_defaults(diftraywm_compositor)
 target_compile_definitions(diftraywm_compositor PRIVATE
-  DIFTRAY_NOTELET_DEFAULT_PATH="${DIFTRAY_NOTELET_DEFAULT_PATH}")
+  DIFTRAY_NOTELET_DEFAULT_PATH="${DIFTRAY_NOTELET_DEFAULT_PATH}"
+  DIFTRAY_HELP_DEFAULT_PATH="${DIFTRAYWM_ROOT}/help:${CMAKE_INSTALL_FULL_DATADIR}/diftraywm/help")
 target_link_libraries(diftraywm_compositor PUBLIC
   diftraywm_notelet
   wlroots::wlroots
@@ -399,8 +408,10 @@ add_library(diftraywm_command STATIC
   src/command/CommandBar.cpp
   src/command/CommandHandlers.cpp
   src/command/MobilityHandler.cpp
+  src/help/HelpPager.cpp
 )
 diftraywm_target_defaults(diftraywm_command)
+target_link_libraries(diftraywm_command PUBLIC onig)
 
 add_library(diftraywm_theme STATIC
   src/theme/ThemeEngine.cpp
@@ -472,6 +483,9 @@ install(FILES diftray.conf
 install(DIRECTORY themes
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm"
   FILES_MATCHING PATTERN "*.css")
+install(DIRECTORY help
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm"
+  FILES_MATCHING PATTERN "*.1")
 
 # ---------------------------------------------------------------------------
 # Tests

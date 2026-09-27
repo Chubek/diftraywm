@@ -59,6 +59,7 @@ WLR_RENDERER=pixman \
 - `Meta+Left` / `Meta+Right` cycle NCursor or GCursor tabs
 - `Meta+1`–`Meta+9` switch workspace
 - `Meta+0` workspace 10
+- `:help` / `:h` opens the built-in Unix-manpage-style Help Pager
 
 Graphical clients launched from a cell or the launcher are promoted to a
 GCursor. The default `gcursor_mode = tab` shows one at a time;
@@ -89,3 +90,12 @@ names. Empty entries are ignored.
 
 See [notelets/README.md](notelets/README.md) for packaging and the Termscript
 authoring API.
+
+## Help
+
+`:help` opens the help index; `:help help-pager` explains pager navigation and
+`:help notelets` documents Notelets. `:help find <regex>` searches the open
+page with Oniguruma regular expressions. While reading, `/` opens an in-page
+search, `n` and `?` move between results, and `q` or `Escape` closes the pager.
+`help_key_*` entries in `diftray.conf` rebind these keys; `help_path` can point
+at colon-separated directories of additional `page.1` manual pages.

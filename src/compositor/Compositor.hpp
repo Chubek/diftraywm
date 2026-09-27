@@ -4,6 +4,7 @@
 #include "command/CommandContext.hpp"
 #include "config/Config.hpp"
 #include "input/KeyboardHandler.hpp"
+#include "help/HelpPager.hpp"
 #include "nterm/NTermRenderer.hpp"
 
 #include <memory>
@@ -64,6 +65,12 @@ public:
   std::string list_notelets() const;
   std::string open_notelet(const std::string &id);
   std::string close_notelet();
+  std::string open_help_page(const std::string &topic);
+  std::string find_help(const std::string &pattern);
+  std::string set_help_bookmark(const std::string &name);
+  std::string open_help_bookmark(const std::string &name);
+  bool help_pager_active() const { return help_pager_active_; }
+  const std::string &help_page_name() const { return help_pager_.page_name(); }
   std::string spawn_ncursor();
   bool handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
                   uint32_t unicode);
@@ -87,6 +94,11 @@ private:
   void detach_cell_surface(Cell *cell);
   void render_cell(Cell *cell, bool selected);
   void paint_notelet(Cell *cell);
+  void paint_help_pager();
+  bool handle_help_pager_key(uint32_t keysym, uint32_t unicode);
+  bool feed_help_search_key(uint32_t keysym, uint32_t unicode);
+  bool help_key_matches(const std::string &binding, uint32_t keysym,
+                        uint32_t unicode) const;
   void render_all_cells();
   void apply_view_visibility();
   void update_chrome();
@@ -133,6 +145,7 @@ private:
   std::vector<std::unique_ptr<GCursorView>> gcursors_;
   std::unique_ptr<TCursorView> tcursor_view_;
   CommandBar command_bar_;
+  HelpPager help_pager_;
   CommandContext command_context_;
   KeyboardHandler keyboard_handler_;
   NTermRenderer nterm_renderer_;
@@ -154,6 +167,9 @@ private:
   int output_height_ = 720;
   bool command_bar_open_ = false;
   bool launcher_mode_ = false;
+  bool help_pager_active_ = false;
+  bool help_search_open_ = false;
+  std::string help_search_input_;
   GCursorView *quick_restore_[4] = {nullptr, nullptr, nullptr, nullptr};
   int current_workspace_ = 1;
   int tcursor_workspace_ = 0;

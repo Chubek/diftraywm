@@ -1,0 +1,42 @@
+.TH HELP-PAGER 7
+.SH NAME
+help-pager - browse DiftrayWM manual pages
+.SH DESCRIPTION
+The Help Pager displays DiftrayWM manual pages inside the focused NCursor cell.
+It accepts Unix manpage source and keeps the page open until it is closed.
+.SH COMMANDS
+.TP
+:help [page]
+Open help-index, or the named page.
+.TP
+:h [page]
+Short form of :help.
+.TP
+:help find {pattern}
+Search the current page using an Oniguruma UTF-8 regular expression.
+.TP
+:help bookmark-set {name}
+Bookmark the current page for this compositor session.
+.TP
+:help bookmark-open {name}
+Open a saved bookmark.
+.SH NAVIGATION
+.TP
+/
+Open an in-page search prompt. Enter runs the search and Escape cancels it.
+.TP
+n and ?
+Jump to the next and previous matching line after a search.
+.TP
+Space and b
+Move one page down and up. j and k, or the arrow keys, move one line.
+.TP
+q or Escape
+Close the pager.
+.SH CONFIGURATION
+The general configuration section accepts help_key_close, help_key_search,
+help_key_next, help_key_previous, help_key_page_down, help_key_page_up,
+help_key_line_down, and help_key_line_up. Values are literal one-character
+keys, or space, PageDown, PageUp, Up, and Down.
+.SH FILES
+help_path names a colon-separated set of directories containing page.1 files.

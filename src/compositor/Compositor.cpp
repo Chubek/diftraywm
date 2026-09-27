@@ -85,6 +85,11 @@ bool Compositor::init() {
   if (!config_.theme.empty() && std::filesystem::path(config_.theme).is_relative()) {
     config_.theme = (config_path.parent_path() / config_.theme).lexically_normal().string();
   }
+  if (!config_.help_path.empty() && std::filesystem::path(config_.help_path).is_relative()) {
+    config_.help_path = (config_path.parent_path() / config_.help_path).lexically_normal().string();
+  }
+  help_pager_.set_search_path(config_.help_path.empty() ? DIFTRAY_HELP_DEFAULT_PATH
+                                                         : config_.help_path);
   if (!config_.word_pool.empty()) {
     setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 0);
   }
@@ -320,6 +325,14 @@ void Compositor::paint_notelet(Cell *cell) {
   cell->nterm()->display(it->second->frame());
 }
 
+void Compositor::paint_help_pager() {
+  if (!help_pager_active_) return;
+  auto *cell = active_cell();
+  if (!cell || !cell->nterm()) return;
+  cell->nterm()->display(help_pager_.render(cell->nterm()->columns(), cell->nterm()->rows()));
+  render_cell(cell, true);
+}
+
 void Compositor::render_all_cells() {
   auto *ncursor = ncursor_view();
   Cell *focused = active_cell();
@@ -345,6 +358,7 @@ void Compositor::render_all_cells() {
       render_cell(cell.get(), cell.get() == focused);
     }
   }
+  paint_help_pager();
   (void)ncursor;
 }
 
@@ -437,9 +451,14 @@ void Compositor::update_chrome() {
     chrome += "  |  " + status_line_;
   }
   diftray_wayland_runtime_set_status_line(wayland_runtime_, chrome.c_str());
-  if (command_bar_open_) {
-    std::string prompt = launcher_mode_ ? "launch> " : (command_bar_.scope == CommandScope::NCURSOR_GLOBAL ? "global: " : ":");
-    prompt += command_bar_.input_buffer;
+  if (command_bar_open_ || help_search_open_) {
+    std::string prompt;
+    if (help_search_open_) {
+      prompt = "/" + help_search_input_;
+    } else {
+      prompt = launcher_mode_ ? "launch> " : (command_bar_.scope == CommandScope::NCURSOR_GLOBAL ? "global: " : ":");
+      prompt += command_bar_.input_buffer;
+    }
     diftray_wayland_runtime_set_command_bar(wayland_runtime_, true, prompt.c_str());
   } else {
     diftray_wayland_runtime_set_command_bar(wayland_runtime_, false, "");
@@ -452,7 +471,7 @@ void Compositor::relayout() {
     return;
   }
   int usable_height = output_height_ - config_.status_bar_height;
-  if (command_bar_open_) {
+  if (command_bar_open_ || help_search_open_) {
     usable_height -= config_.command_bar_height;
   }
   const auto workspace_views = ncursors_on_workspace(current_workspace_);
@@ -491,6 +510,9 @@ int Compositor::terminal_fd_ready(int fd, uint32_t mask, void *data) {
   }
   it->second->nterm()->on_readable();
   compositor->render_cell(it->second, it->second == compositor->active_cell());
+  if (compositor->help_pager_active_ && it->second == compositor->active_cell()) {
+    compositor->paint_help_pager();
+  }
   return 0;
 }
 
@@ -638,6 +660,77 @@ void Compositor::close_command_bar() {
   relayout();
 }
 
+bool Compositor::help_key_matches(const std::string &binding, uint32_t keysym,
+                                  uint32_t unicode) const {
+  std::string normalized;
+  normalized.reserve(binding.size());
+  for (unsigned char ch : binding) normalized.push_back(static_cast<char>(std::tolower(ch)));
+  if (normalized == "space") return keysym == XKB_KEY_space;
+  if (normalized == "pagedown" || normalized == "page-down") return keysym == XKB_KEY_Page_Down;
+  if (normalized == "pageup" || normalized == "page-up") return keysym == XKB_KEY_Page_Up;
+  if (normalized == "up") return keysym == XKB_KEY_Up;
+  if (normalized == "down") return keysym == XKB_KEY_Down;
+  return binding.size() == 1 && unicode != 0 &&
+         static_cast<unsigned char>(binding[0]) == static_cast<unsigned char>(unicode);
+}
+
+bool Compositor::feed_help_search_key(uint32_t keysym, uint32_t unicode) {
+  if (keysym == XKB_KEY_Escape) {
+    help_search_open_ = false;
+    help_search_input_.clear();
+  } else if (keysym == XKB_KEY_Return || keysym == XKB_KEY_KP_Enter) {
+    status_line_ = find_help(help_search_input_);
+    help_search_open_ = false;
+    help_search_input_.clear();
+  } else if (keysym == XKB_KEY_BackSpace) {
+    if (!help_search_input_.empty()) help_search_input_.pop_back();
+  } else if (unicode >= 32 && unicode < 127) {
+    help_search_input_.push_back(static_cast<char>(unicode));
+  }
+  relayout();
+  return true;
+}
+
+bool Compositor::handle_help_pager_key(uint32_t keysym, uint32_t unicode) {
+  if (keysym == XKB_KEY_Escape || help_key_matches(config_.help_key_close, keysym, unicode)) {
+    help_pager_active_ = false;
+    help_search_open_ = false;
+    status_line_ = "help closed";
+    relayout();
+    return true;
+  }
+  if (help_key_matches(config_.help_key_search, keysym, unicode)) {
+    help_search_open_ = true;
+    help_search_input_.clear();
+    relayout();
+    return true;
+  }
+  std::string message;
+  bool changed = false;
+  const std::size_t rows = active_cell() && active_cell()->nterm()
+                               ? active_cell()->nterm()->rows()
+                               : 24;
+  if (help_key_matches(config_.help_key_next, keysym, unicode)) {
+    changed = help_pager_.next_match(message);
+  } else if (help_key_matches(config_.help_key_previous, keysym, unicode)) {
+    changed = help_pager_.previous_match(message);
+  } else if (help_key_matches(config_.help_key_page_down, keysym, unicode)) {
+    changed = help_pager_.scroll_pages(1, rows > 1 ? rows - 1 : 1, message);
+  } else if (help_key_matches(config_.help_key_page_up, keysym, unicode)) {
+    changed = help_pager_.scroll_pages(-1, rows > 1 ? rows - 1 : 1, message);
+  } else if (help_key_matches(config_.help_key_line_down, keysym, unicode) || keysym == XKB_KEY_Down) {
+    changed = help_pager_.scroll_lines(1, rows > 1 ? rows - 1 : 1, message);
+  } else if (help_key_matches(config_.help_key_line_up, keysym, unicode) || keysym == XKB_KEY_Up) {
+    changed = help_pager_.scroll_lines(-1, rows > 1 ? rows - 1 : 1, message);
+  } else {
+    return true;
+  }
+  if (!message.empty()) status_line_ = message;
+  if (changed) paint_help_pager();
+  update_chrome();
+  return true;
+}
+
 bool Compositor::feed_command_bar_key(uint32_t keysym, uint32_t unicode) {
   if (keysym == XKB_KEY_Escape) {
     close_command_bar();
@@ -676,6 +769,9 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     stop();
     return true;
   }
+  if (help_search_open_) {
+    return feed_help_search_key(keysym, unicode);
+  }
   if (command_bar_open_ && !(meta && keysym == XKB_KEY_colon)) {
     return feed_command_bar_key(keysym, unicode);
   }
@@ -686,6 +782,9 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
   if (!meta && keysym == XKB_KEY_colon && !active_gcursor()) {
     open_command_bar(CommandScope::CELL, "");
     return true;
+  }
+  if (help_pager_active_ && !meta) {
+    return handle_help_pager_key(keysym, unicode);
   }
   if (meta && keysym == XKB_KEY_d) {
     open_command_bar(CommandScope::NCURSOR_GLOBAL, "launch");
@@ -805,6 +904,37 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     return true;
   }
   return true;
+}
+
+std::string Compositor::open_help_page(const std::string &topic) {
+  std::string message;
+  if (!help_pager_.open(topic, message)) return message;
+  if (active_gcursor()) set_active_view(ncursor_view());
+  help_pager_active_ = true;
+  help_search_open_ = false;
+  relayout();
+  return message;
+}
+
+std::string Compositor::find_help(const std::string &pattern) {
+  std::string message;
+  if (!help_pager_.find(pattern, message)) return message;
+  if (help_pager_active_) paint_help_pager();
+  return message;
+}
+
+std::string Compositor::set_help_bookmark(const std::string &name) {
+  std::string message;
+  help_pager_.set_bookmark(name, message);
+  return message;
+}
+
+std::string Compositor::open_help_bookmark(const std::string &name) {
+  std::string message;
+  if (!help_pager_.open_bookmark(name, message)) return message;
+  help_pager_active_ = true;
+  relayout();
+  return message;
 }
 
 void Compositor::set_active_view(View *view) {

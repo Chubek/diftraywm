@@ -16,6 +16,15 @@ struct CompositorConfig {
   std::string gcursor_mode = "tab";
   std::string word_pool = "/usr/share/dict/words";
   std::string theme;
+  std::string help_path;
+  std::string help_key_close = "q";
+  std::string help_key_search = "/";
+  std::string help_key_next = "n";
+  std::string help_key_previous = "?";
+  std::string help_key_page_down = "space";
+  std::string help_key_page_up = "b";
+  std::string help_key_line_down = "j";
+  std::string help_key_line_up = "k";
 };
 
 bool load_compositor_config(const std::string &path, CompositorConfig &config,

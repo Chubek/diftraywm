@@ -236,6 +236,32 @@ public:
   }
 };
 
+class HelpHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override {
+    return command == "help" || command == "h";
+  }
+
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "help unavailable";
+    if (tokens.size() == 1) return context.compositor->open_help_page("help-index");
+    if (tokens[1] == "find") {
+      if (tokens.size() < 3) return "help find requires a regex pattern";
+      return context.compositor->find_help(join_tokens(tokens, 2));
+    }
+    if (tokens[1] == "bookmark-set") {
+      return tokens.size() == 3 ? context.compositor->set_help_bookmark(tokens[2])
+                                : "help bookmark-set requires a name";
+    }
+    if (tokens[1] == "bookmark-open") {
+      return tokens.size() == 3 ? context.compositor->open_help_bookmark(tokens[2])
+                                : "help bookmark-open requires a name";
+    }
+    return context.compositor->open_help_page(tokens[1]);
+  }
+};
+
 class TabHandler final : public CommandHandler {
 public:
   bool matches(std::string_view command) const override { return command == "tab"; }
@@ -292,6 +318,7 @@ void register_builtin_handlers(CommandBar &bar) {
   bar.register_handler(std::make_unique<SetHandler>());
   bar.register_handler(std::make_unique<ThemeHandler>());
   bar.register_handler(std::make_unique<NoteletHandler>());
+  bar.register_handler(std::make_unique<HelpHandler>());
   bar.register_handler(std::make_unique<TabHandler>());
   bar.register_handler(std::make_unique<WorkspaceHandler>());
 }

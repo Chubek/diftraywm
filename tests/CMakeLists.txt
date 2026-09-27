@@ -20,3 +20,10 @@ target_compile_definitions(diftraywm_notelet_test PRIVATE
   DIFTRAY_BUNDLED_NOTELETS_DIR="${DIFTRAY_BUNDLED_NOTELETS_DIR}")
 add_dependencies(diftraywm_notelet_test diftraywm_bundled_notelets)
 add_test(NAME diftraywm_notelet_test COMMAND diftraywm_notelet_test)
+
+add_executable(diftraywm_help_pager_test help_pager.cpp)
+diftraywm_target_defaults(diftraywm_help_pager_test)
+target_link_libraries(diftraywm_help_pager_test PRIVATE diftraywm_command)
+target_compile_definitions(diftraywm_help_pager_test PRIVATE
+  DIFTRAY_HELP_TEST_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../help")
+add_test(NAME diftraywm_help_pager_test COMMAND diftraywm_help_pager_test)
