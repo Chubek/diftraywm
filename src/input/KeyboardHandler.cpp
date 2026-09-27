@@ -1,4 +1,17 @@
 #include "input/KeyboardHandler.hpp"
 
+#include "compositor/Compositor.hpp"
+
+#include <wayland-server-protocol.h>
+#include <wlr/types/wlr_keyboard.h>
+#include <xkbcommon/xkbcommon.h>
+
 KeyboardHandler::KeyboardHandler(Compositor *compositor) : compositor_(compositor) {}
-void KeyboardHandler::handle_key(wlr_keyboard *, const wlr_keyboard_key_event &) {}
+
+bool KeyboardHandler::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
+                                 uint32_t unicode) {
+  if (!compositor_) {
+    return false;
+  }
+  return compositor_->handle_key(keysym, modifiers, state, unicode);
+}

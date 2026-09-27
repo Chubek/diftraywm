@@ -53,3 +53,6 @@ void Cell::set_shell_override(std::string shell_override) {
   }
 }
 const std::string &Cell::shell_override() const { return shell_override_; }
+
+void Cell::set_surface(diftray_cell_surface *surface) { surface_ = surface; }
+diftray_cell_surface *Cell::surface() const { return surface_; }

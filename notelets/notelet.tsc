@@ -1,0 +1,6 @@
+# Bundled authoring library. Each Notelet render runs main.tsc after this file.
+const notelet = G:load "diftray.notelet" or G:die "Notelet host unavailable";
+const notelet_key = notelet:key;
+const notelet_name = notelet:name;
+# G:puts writes to the Notelet cell. notelet:get/set persist strings between keys.
+# notelet:resource "file.txt" reads an optional bundled assets/file.txt.

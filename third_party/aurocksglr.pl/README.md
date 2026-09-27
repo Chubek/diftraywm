@@ -1,0 +1,194 @@
+NAME
+    AurocksGLR.pl - generate a scannerless GLR-style parser from an Aurocks
+    grammar
+
+SYNOPSIS
+      perl AurocksGLR.pl grammar.g > parser.m4
+
+    The generated intermediate representation is translated by a target
+    macro set such as "target/ToC.m4" or "target/ToPython.m4".
+
+DESCRIPTION
+    "AurocksGLR.pl" is a self-contained parser generator for the small
+    grammar language used by the Aurocks examples. It reads a grammar file,
+    extracts its C prologue, directives, productions, semantic actions, and
+    C epilogue, and writes a complete C parser to standard output.
+
+    The generated parser is scannerless: literal terminals and
+    regular-expression terminals are matched directly against the input
+    buffer. No separate lexer is required. A %skip regular expression may be
+    used to consume layout such as spaces and newlines between grammar
+    symbols.
+
+    The implementation uses recursive GLR-style alternatives. Each
+    production alternative is attempted from the same input position, with
+    the parser state restored when an alternative fails. Successful
+    alternatives produce a value through the production's semantic action.
+    This preserves the essential backtracking and ambiguity-handling
+    behavior needed by the bundled grammars, while keeping the generated
+    runtime small and portable.
+
+INPUT GRAMMAR
+    Grammar files are divided into three regions:
+
+    * "%{ ... %}"
+
+      The C prologue. It is copied into the generated source before the
+      runtime. Place type declarations, constructor prototypes, includes,
+      and other application-specific declarations here.
+
+    * The first and second "%%"
+
+      The production section. This contains directives and grammar rules.
+
+    * Text after the second "%%"
+
+      The C epilogue. It is copied verbatim to the end of the generated
+      source. This is normally where constructor and helper function
+      definitions live.
+
+    The generator requires a %start directive and at least one production.
+    Production names are C identifiers. A production has one or more
+    alternatives separated by "|" and terminated by ";":
+
+      expression:
+            NUMBER                 { $$ = make_number($1); }
+          | expression '+' NUMBER  { $$ = add($1, $3); }
+          ;
+
+    Symbols may be nonterminal names, quoted literals, regular expressions
+    written between slashes, or the special %empty symbol.
+
+DIRECTIVES
+    The following directives are recognized by the grammar reader and are
+    available for SPPF/disambiguation-oriented grammars:
+
+    "%start *name*"
+      Selects the start production. The generated API is "parse_*name*()",
+      with yyparse() as an alias.
+
+    "%skip */regexp/*"
+      Defines insignificant input to skip before terminal matches and at end
+      of input. The expression is compiled as a POSIX extended regular
+      expression and must match at the current input position.
+
+    %prefer, %avoid, %longest
+      Declare lexical or forest-selection preferences. They are accepted as
+      grammar metadata and are emitted as SPPF policy flags in generated C.
+      They document the intended resolution policy even when a grammar's
+      alternatives are ultimately resolved by ordered successful matching.
+
+    "%dprec *number*"
+      Attaches a dynamic precedence value to a production alternative. The
+      value is retained while the grammar is read and identifies the
+      intended winner when competing reductions have different precedence.
+
+    %left, %right, %nonassoc
+      Declare associativity conventions for operator-style productions.
+
+    %merge, %reject, %cut, %expect
+      Declare merge, rejection, cut, and expected-conflict policies for
+      ambiguous forests.
+
+    %glr, %sppf, %ambiguity, %resolve, %priority
+      Declare GLR execution, shared-packed parse forest, ambiguity
+      resolution, and priority behavior.
+
+    %inline, %layout, %lexer, %error
+      Declare production inlining, layout handling, lexer integration, and
+      error handling conventions.
+
+    Unknown directives are retained as metadata while parsing the file, so
+    grammar authors can annotate policies without making the generator fail.
+
+SEMANTIC ACTIONS
+    Actions are C fragments enclosed in braces. The following substitutions
+    are performed before the action is emitted:
+
+    $$
+      Becomes the local "result" variable. Assign the semantic value of the
+      production to it.
+
+    $1, $2, ...
+      Become local variables "v1", "v2", and so on, corresponding to
+      right-hand side symbols.
+
+    $TOKEN
+      Becomes "token", a pointer to the beginning of the most recently
+      matched terminal. The generated runtime supplies the matched span to
+      actions that need to convert text into a value.
+
+    Values are represented internally as "void *" so that grammars can
+    define their own semantic types. Actions are responsible for applying
+    the appropriate casts or constructors. Numeric "strtod($TOKEN, NULL)"
+    actions are boxed automatically for compatibility with the bundled JSON
+    grammar.
+
+GENERATED C RUNTIME
+    The generated source contains:
+
+    * A parser state with current pointer, end pointer, and error position.
+
+    * A whitespace/layout skipper driven by %skip.
+
+    * Literal matching for quoted terminals.
+
+    * POSIX extended regular-expression matching for slash-delimited
+      terminals.
+
+    * One generated function per nonterminal.
+
+    * Alternative restoration so a failed production does not consume input
+      needed by another branch.
+
+    * "parse_*start*()" and yyparse() entry points.
+
+    On success, "parse_*start*()" returns the semantic value produced by the
+    start production. On failure, or when trailing non-layout input remains,
+    it returns "NULL".
+
+SCANNERLESS MATCHING
+    Quoted terminals are matched literally at the current input position.
+    Regular-expression terminals are anchored automatically, so a terminal
+    cannot skip forward looking for a later match. The current input pointer
+    advances only after a complete terminal match. %skip is applied before
+    terminals and once after the start production.
+
+    Because matching happens inside production evaluation, a grammar can
+    express token-like rules and structural rules in one specification. This
+    is useful for languages where lexical interpretation depends on
+    grammatical context.
+
+LIMITATIONS
+    This generator intentionally favors a compact implementation over a full
+    canonical LR-table engine. It does not currently construct a persistent,
+    graph-structured SPPF data structure or perform generalized chart
+    sharing across every equivalent state. SPPF-related directives therefore
+    describe and annotate the intended disambiguation policy; production
+    order and successful alternative selection remain the operational
+    resolution mechanism.
+
+    Regular expressions use the host C library's POSIX extended-regex
+    syntax. Actions must be valid C after the documented substitutions.
+    Nested braces in an action are not supported by the simple grammar
+    reader.
+
+OUTPUT
+    The intermediate "m4" representation is written to standard output.
+    Diagnostics and malformed-input errors are written by the Perl generator
+    to standard error and terminate with a non-zero exit status.
+
+EXAMPLES
+    Generate and compile the bundled JSON parser:
+
+      AurocksGLR.sh --target C JSON.g > json_parser.c
+      cc -std=c99 -c json_parser.c
+
+    The resulting parser exposes:
+
+      void *parse_json(const char *input);
+      void *yyparse(const char *input);
+
+AUTHOR
+    The Aurocks project.
+

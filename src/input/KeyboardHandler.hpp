@@ -2,14 +2,13 @@
 
 #include <cstdint>
 
-struct wlr_keyboard;
-struct wlr_keyboard_key_event;
 class Compositor;
 
 class KeyboardHandler {
 public:
   explicit KeyboardHandler(Compositor *compositor = nullptr);
-  void handle_key(wlr_keyboard *keyboard, const wlr_keyboard_key_event &event);
+  bool handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
+                  uint32_t unicode);
 
 private:
   Compositor *compositor_ = nullptr;

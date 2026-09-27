@@ -2,7 +2,6 @@
 
 #include <ctype.h>
 #include <drm_fourcc.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -13,17 +12,26 @@
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
+
+struct diftray_pixel_buffer {
+  struct wlr_buffer base;
+  uint32_t *pixels;
+  size_t stride;
+};
 
 struct diftray_wayland_runtime {
   struct wl_display *display;
@@ -33,22 +41,49 @@ struct diftray_wayland_runtime {
   struct wlr_output_layout *output_layout;
   struct wlr_scene *scene;
   struct wlr_scene_output_layout *scene_layout;
+  struct wlr_scene_tree *ncursor_tree;
+  struct wlr_scene_tree *gcursor_tree;
+  struct wlr_scene_tree *overlay_tree;
   struct wlr_xdg_shell *xdg_shell;
   struct wlr_seat *seat;
+  struct wlr_cursor *cursor;
+  struct wlr_xcursor_manager *cursor_mgr;
   struct wlr_scene_rect *background;
   struct wlr_scene_rect *command_bar;
+  struct wlr_scene_buffer *command_bar_text;
+  struct diftray_pixel_buffer *command_bar_buffer;
+  struct wlr_scene_buffer *status_text;
+  struct diftray_pixel_buffer *status_buffer;
   struct wl_listener new_output;
   struct wl_listener new_input;
   struct wl_listener new_toplevel;
   struct wl_listener new_popup;
+  struct wl_listener request_cursor;
+  struct wl_listener request_set_selection;
+  struct wl_listener cursor_motion;
+  struct wl_listener cursor_motion_absolute;
+  struct wl_listener cursor_button;
+  struct wl_listener cursor_axis;
+  struct wl_listener cursor_frame;
   struct wl_list outputs;
   struct wl_list keyboards;
   struct wl_list toplevels;
-  char *terminal_text;
   diftray_wayland_key_handler key_handler;
   void *key_handler_userdata;
+  diftray_wayland_toplevel_handler toplevel_handler;
+  diftray_wayland_toplevel_focus_handler focus_handler;
+  diftray_wayland_toplevel_destroy_handler toplevel_destroy_handler;
+  diftray_wayland_toplevel_request_handler toplevel_request_handler;
+  void *toplevel_userdata;
+  diftray_wayland_output_handler output_handler;
+  void *output_userdata;
   bool command_bar_visible;
+  bool gcursor_visible;
+  char *command_bar_text_copy;
+  char *status_line;
   struct diftray_wayland_style style;
+  int output_width;
+  int output_height;
 };
 
 struct diftray_output {
@@ -56,26 +91,62 @@ struct diftray_output {
   struct diftray_wayland_runtime *runtime;
   struct wlr_output *output;
   struct wlr_scene_output *scene_output;
-  struct wlr_scene_buffer *terminal_scene;
-  struct diftray_terminal_buffer *terminal_buffer;
   struct wl_listener frame;
   struct wl_listener request_state;
   struct wl_listener destroy;
 };
 
-struct diftray_terminal_buffer {
-  struct wlr_buffer base;
-  uint32_t *pixels;
-  size_t stride;
+struct diftray_keyboard {
+  struct wl_list link;
+  struct diftray_wayland_runtime *runtime;
+  struct wlr_keyboard *keyboard;
+  bool consumed_keys[256];
+  struct wl_listener modifiers;
+  struct wl_listener key;
+  struct wl_listener destroy;
+};
+
+struct diftray_toplevel {
+  struct wl_list link;
+  struct diftray_wayland_runtime *runtime;
+  struct wlr_xdg_toplevel *xdg_toplevel;
+  struct wlr_scene_tree *tree;
+  struct wlr_scene_tree *surface_tree;
+  struct wl_listener map;
+  struct wl_listener unmap;
+  struct wl_listener commit;
+  struct wl_listener destroy;
+  struct wl_listener request_minimize;
+  struct wl_listener request_maximize;
+  struct wl_listener request_fullscreen;
+  bool mapped;
+  int x, y, width, height;
+};
+
+struct diftray_popup {
+  struct wlr_xdg_popup *popup;
+  struct wl_listener commit;
+  struct wl_listener destroy;
+};
+
+struct diftray_cell_surface {
+  struct diftray_wayland_runtime *runtime;
+  struct wlr_scene_tree *tree;
+  struct wlr_scene_rect *border;
+  struct wlr_scene_rect *highlight;
+  struct wlr_scene_buffer *buffer_node;
+  struct diftray_pixel_buffer *buffer;
+  int x;
+  int y;
+  int width;
+  int height;
 };
 
 /*
- * A compact 5x7 font is used for the compositor bootstrap terminal. It keeps
- * the output useful before the full HarfBuzz/FreeType glyph pipeline is
- * connected to the scene graph. Lowercase input is rendered using its
- * uppercase glyph, which is sufficient for shell startup and diagnostics.
+ * Compact 5x7 glyphs are used only for compositor chrome (command bar /
+ * status). NTerm cells are rendered by the FreeType/HarfBuzz pipeline.
  */
-static const uint8_t terminal_glyphs[128][7] = {
+static const uint8_t chrome_glyphs[128][7] = {
     [' '] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
     ['!'] = {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04},
     ['#'] = {0x0a, 0x1f, 0x0a, 0x0a, 0x1f, 0x0a, 0x00},
@@ -128,47 +199,46 @@ static const uint8_t terminal_glyphs[128][7] = {
     ['T'] = {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
     ['U'] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e},
     ['V'] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04},
-    ['W'] = {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0a},
+    ['W'] = {0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11},
     ['X'] = {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11},
     ['Y'] = {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04},
     ['Z'] = {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f},
     ['_'] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f},
-    ['|'] = {0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
-};
-
-struct diftray_toplevel {
-  struct wl_list link;
-  struct diftray_wayland_runtime *runtime;
-  struct wlr_xdg_toplevel *xdg_toplevel;
-  struct wlr_scene_tree *tree;
-  struct wlr_scene_rect *border;
-  struct wlr_scene_tree *surface_tree;
-  struct wl_listener map;
-  struct wl_listener unmap;
-  struct wl_listener commit;
-  struct wl_listener destroy;
-};
-
-struct diftray_keyboard {
-  struct wl_list link;
-  struct diftray_wayland_runtime *runtime;
-  struct wlr_keyboard *keyboard;
-  struct wl_listener modifiers;
-  struct wl_listener key;
-  struct wl_listener destroy;
-};
-
-struct diftray_popup {
-  struct wlr_xdg_popup *popup;
-  struct wl_listener commit;
-  struct wl_listener destroy;
+    ['['] = {0x0e, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0e},
+    [']'] = {0x0e, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0e},
+    ['a'] = {0x00, 0x00, 0x0e, 0x01, 0x0f, 0x11, 0x0f},
+    ['b'] = {0x10, 0x10, 0x1e, 0x11, 0x11, 0x11, 0x1e},
+    ['c'] = {0x00, 0x00, 0x0e, 0x10, 0x10, 0x11, 0x0e},
+    ['d'] = {0x01, 0x01, 0x0f, 0x11, 0x11, 0x11, 0x0f},
+    ['e'] = {0x00, 0x00, 0x0e, 0x11, 0x1f, 0x10, 0x0e},
+    ['f'] = {0x06, 0x08, 0x1e, 0x08, 0x08, 0x08, 0x08},
+    ['g'] = {0x00, 0x00, 0x0f, 0x11, 0x0f, 0x01, 0x0e},
+    ['h'] = {0x10, 0x10, 0x1e, 0x11, 0x11, 0x11, 0x11},
+    ['i'] = {0x04, 0x00, 0x0c, 0x04, 0x04, 0x04, 0x0e},
+    ['j'] = {0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0c},
+    ['k'] = {0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12},
+    ['l'] = {0x0c, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e},
+    ['m'] = {0x00, 0x00, 0x1a, 0x15, 0x15, 0x15, 0x15},
+    ['n'] = {0x00, 0x00, 0x1e, 0x11, 0x11, 0x11, 0x11},
+    ['o'] = {0x00, 0x00, 0x0e, 0x11, 0x11, 0x11, 0x0e},
+    ['p'] = {0x00, 0x00, 0x1e, 0x11, 0x1e, 0x10, 0x10},
+    ['q'] = {0x00, 0x00, 0x0f, 0x11, 0x0f, 0x01, 0x01},
+    ['r'] = {0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10},
+    ['s'] = {0x00, 0x00, 0x0f, 0x10, 0x0e, 0x01, 0x1e},
+    ['t'] = {0x08, 0x08, 0x1e, 0x08, 0x08, 0x08, 0x06},
+    ['u'] = {0x00, 0x00, 0x11, 0x11, 0x11, 0x11, 0x0f},
+    ['v'] = {0x00, 0x00, 0x11, 0x11, 0x11, 0x0a, 0x04},
+    ['w'] = {0x00, 0x00, 0x11, 0x15, 0x15, 0x15, 0x0a},
+    ['x'] = {0x00, 0x00, 0x11, 0x0a, 0x04, 0x0a, 0x11},
+    ['y'] = {0x00, 0x00, 0x11, 0x11, 0x0f, 0x01, 0x0e},
+    ['z'] = {0x00, 0x00, 0x1f, 0x02, 0x04, 0x08, 0x1f},
 };
 
 static uint8_t channel_from_float(float value) {
-  if (value <= 0.0f) {
+  if (value < 0.0f) {
     return 0;
   }
-  if (value >= 1.0f) {
+  if (value > 1.0f) {
     return 255;
   }
   return (uint8_t)(value * 255.0f + 0.5f);
@@ -183,44 +253,42 @@ static uint32_t pack_color(const float color[4]) {
          ((uint32_t)green << 8) | blue;
 }
 
-static void terminal_buffer_destroy(struct wlr_buffer *wlr_buffer) {
-  struct diftray_terminal_buffer *buffer =
+static void pixel_buffer_destroy(struct wlr_buffer *wlr_buffer) {
+  struct diftray_pixel_buffer *buffer =
       wl_container_of(wlr_buffer, buffer, base);
   wlr_buffer_finish(wlr_buffer);
   free(buffer->pixels);
   free(buffer);
 }
 
-static bool terminal_buffer_begin_data_ptr_access(
-    struct wlr_buffer *wlr_buffer, uint32_t flags, void **data,
-    uint32_t *format, size_t *stride) {
-  struct diftray_terminal_buffer *buffer =
+static bool pixel_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
+                                               uint32_t flags, void **data,
+                                               uint32_t *format,
+                                               size_t *stride) {
+  struct diftray_pixel_buffer *buffer =
       wl_container_of(wlr_buffer, buffer, base);
-  if (flags & WLR_BUFFER_DATA_PTR_ACCESS_WRITE) {
-    return false;
-  }
+  (void)flags;
   *data = buffer->pixels;
   *format = DRM_FORMAT_ARGB8888;
   *stride = buffer->stride;
   return true;
 }
 
-static void terminal_buffer_end_data_ptr_access(struct wlr_buffer *wlr_buffer) {
+static void pixel_buffer_end_data_ptr_access(struct wlr_buffer *wlr_buffer) {
   (void)wlr_buffer;
 }
 
-static const struct wlr_buffer_impl terminal_buffer_impl = {
-    .destroy = terminal_buffer_destroy,
-    .begin_data_ptr_access = terminal_buffer_begin_data_ptr_access,
-    .end_data_ptr_access = terminal_buffer_end_data_ptr_access,
+static const struct wlr_buffer_impl pixel_buffer_impl = {
+    .destroy = pixel_buffer_destroy,
+    .begin_data_ptr_access = pixel_buffer_begin_data_ptr_access,
+    .end_data_ptr_access = pixel_buffer_end_data_ptr_access,
 };
 
-static struct diftray_terminal_buffer *terminal_buffer_create(int width,
-                                                               int height) {
+static struct diftray_pixel_buffer *pixel_buffer_create(int width, int height) {
   if (width <= 0 || height <= 0) {
     return NULL;
   }
-  struct diftray_terminal_buffer *buffer = calloc(1, sizeof(*buffer));
+  struct diftray_pixel_buffer *buffer = calloc(1, sizeof(*buffer));
   if (!buffer) {
     return NULL;
   }
@@ -230,28 +298,27 @@ static struct diftray_terminal_buffer *terminal_buffer_create(int width,
     free(buffer);
     return NULL;
   }
-  wlr_buffer_init(&buffer->base, &terminal_buffer_impl, width, height);
+  wlr_buffer_init(&buffer->base, &pixel_buffer_impl, width, height);
   return buffer;
 }
 
-static void draw_terminal_pixel(struct diftray_terminal_buffer *buffer,
-                                int x, int y, uint32_t color) {
+static void draw_chrome_pixel(struct diftray_pixel_buffer *buffer, int x, int y,
+                              uint32_t color) {
   if (!buffer || x < 0 || y < 0 || x >= buffer->base.width ||
       y >= buffer->base.height) {
     return;
   }
-  buffer->pixels[(size_t)y * (buffer->stride / sizeof(uint32_t)) +
-                (size_t)x] = color;
+  buffer->pixels[(size_t)y * (buffer->stride / sizeof(uint32_t)) + (size_t)x] =
+      color;
 }
 
-static void draw_terminal_glyph(struct diftray_terminal_buffer *buffer,
-                                unsigned char character, int x, int y,
-                                int scale, uint32_t color) {
-  unsigned char glyph_character = character;
-  if (glyph_character >= 'a' && glyph_character <= 'z') {
-    glyph_character = (unsigned char)toupper(glyph_character);
+static void draw_chrome_glyph(struct diftray_pixel_buffer *buffer,
+                              unsigned char character, int x, int y, int scale,
+                              uint32_t color) {
+  if (character >= 128) {
+    character = '?';
   }
-  const uint8_t *rows = terminal_glyphs[glyph_character < 128 ? glyph_character : '?'];
+  const uint8_t *rows = chrome_glyphs[character];
   for (int row = 0; row < 7; ++row) {
     for (int column = 0; column < 5; ++column) {
       if ((rows[row] & (1u << (4 - column))) == 0) {
@@ -259,107 +326,73 @@ static void draw_terminal_glyph(struct diftray_terminal_buffer *buffer,
       }
       for (int dy = 0; dy < scale; ++dy) {
         for (int dx = 0; dx < scale; ++dx) {
-          draw_terminal_pixel(buffer, x + column * scale + dx,
-                              y + row * scale + dy, color);
+          draw_chrome_pixel(buffer, x + column * scale + dx,
+                            y + row * scale + dy, color);
         }
       }
     }
   }
 }
 
-static void render_terminal_buffer(struct diftray_wayland_runtime *runtime,
-                                   struct diftray_output *output) {
-  if (!runtime || !output || !output->output || !output->terminal_scene) {
+static void render_chrome_text(struct diftray_pixel_buffer *buffer,
+                               const char *text, const float bg[4],
+                               const float fg[4]) {
+  if (!buffer) {
     return;
   }
-  const int width = output->output->width;
-  const int height = output->output->height;
-  if (width <= 0 || height <= 0) {
-    return;
+  const uint32_t background = pack_color(bg);
+  const uint32_t foreground = pack_color(fg);
+  const size_t count =
+      (size_t)buffer->base.width * (size_t)buffer->base.height;
+  for (size_t index = 0; index < count; ++index) {
+    buffer->pixels[index] = background;
   }
-  if (!output->terminal_buffer ||
-      output->terminal_buffer->base.width != width ||
-      output->terminal_buffer->base.height != height) {
-    if (output->terminal_buffer) {
-      wlr_buffer_drop(&output->terminal_buffer->base);
-    }
-    output->terminal_buffer = terminal_buffer_create(width, height);
-    if (!output->terminal_buffer) {
-      return;
-    }
+  if (!text) {
+    text = "";
   }
-
-  const uint32_t background = pack_color(runtime->style.background_color);
-  const uint32_t foreground = pack_color(runtime->style.border_color);
-  const size_t pixels = (size_t)width * (size_t)height;
-  for (size_t index = 0; index < pixels; ++index) {
-    output->terminal_buffer->pixels[index] = background;
-  }
-
   const int scale = 2;
-  const int advance = 12 * scale / 2;
-  const int line_height = 10 * scale;
-  int x = 24;
-  int y = 24;
-  bool escape = false;
-  const char *text = runtime->terminal_text;
-  if (!text || !*text) {
-    text = "DiftrayWM";
-  }
+  const int advance = 6 * scale;
+  int x = 8;
+  const int y = (buffer->base.height - 7 * scale) / 2;
   for (const unsigned char *cursor = (const unsigned char *)text; *cursor;
        ++cursor) {
-    const unsigned char character = *cursor;
-    if (escape) {
-      if ((character >= 'a' && character <= 'z') ||
-          (character >= 'A' && character <= 'Z')) {
-        escape = false;
-      }
-      continue;
-    }
-    if (character == 0x1b) {
-      escape = true;
-      continue;
-    }
-    if (character == '\r') {
-      x = 24;
-      continue;
-    }
-    if (character == '\n') {
-      x = 24;
-      y += line_height;
-      continue;
-    }
-    if (character == '\t') {
-      x += advance * 4;
-      continue;
-    }
-    if (character < 0x20) {
-      continue;
-    }
-    if (x + 5 * scale >= width - 24) {
-      x = 24;
-      y += line_height;
-    }
-    if (y + 7 * scale >= height - 24) {
+    if (x + 5 * scale >= buffer->base.width - 8) {
       break;
     }
-    draw_terminal_glyph(output->terminal_buffer, character, x, y, scale,
-                        foreground);
+    draw_chrome_glyph(buffer, *cursor, x, y < 0 ? 2 : y, scale, foreground);
     x += advance;
   }
-  if (x >= 24 && y + 7 * scale < height - 24) {
-    for (int cursor_x = x; cursor_x < x + 8 && cursor_x < width - 24;
-         ++cursor_x) {
-      draw_terminal_pixel(output->terminal_buffer, cursor_x,
-                          y + 7 * scale + 2, foreground);
+}
+
+static struct diftray_toplevel *toplevel_from_xdg(
+    struct diftray_wayland_runtime *runtime,
+    struct wlr_xdg_toplevel *xdg_toplevel) {
+  struct diftray_toplevel *toplevel;
+  wl_list_for_each(toplevel, &runtime->toplevels, link) {
+    if (toplevel->xdg_toplevel == xdg_toplevel) {
+      return toplevel;
     }
   }
-  wlr_scene_buffer_set_buffer_with_damage(output->terminal_scene,
-                                           &output->terminal_buffer->base,
-                                           NULL);
+  return NULL;
+}
+
+static void layout_gcursor(struct diftray_wayland_runtime *runtime,
+                           struct diftray_toplevel *toplevel) {
+  if (!runtime || !toplevel || !toplevel->tree) {
+    return;
+  }
+  wlr_scene_node_set_position(&toplevel->tree->node, toplevel->x, toplevel->y);
+  if (toplevel->xdg_toplevel) {
+    wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel,
+                              toplevel->width > 0 ? toplevel->width : runtime->output_width,
+                              toplevel->height > 0 ? toplevel->height : runtime->output_height);
+  }
 }
 
 static void focus_toplevel(struct diftray_toplevel *toplevel) {
+  if (!toplevel || !toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base) {
+    return;
+  }
   struct wlr_seat *seat = toplevel->runtime->seat;
   struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
   struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
@@ -367,12 +400,14 @@ static void focus_toplevel(struct diftray_toplevel *toplevel) {
   wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
   if (keyboard) {
     wlr_seat_keyboard_notify_enter(seat, surface, keyboard->keycodes,
-                                   keyboard->num_keycodes, &keyboard->modifiers);
+                                   keyboard->num_keycodes,
+                                   &keyboard->modifiers);
   }
 }
 
 static void output_frame(struct wl_listener *listener, void *data) {
   struct diftray_output *output = wl_container_of(listener, output, frame);
+  (void)data;
   struct timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now);
   if (wlr_scene_output_commit(output->scene_output, NULL)) {
@@ -380,22 +415,50 @@ static void output_frame(struct wl_listener *listener, void *data) {
   }
 }
 
+static void notify_output_geometry(struct diftray_wayland_runtime *runtime);
+static void layout_overlay(struct diftray_wayland_runtime *runtime);
+
 static void output_request_state(struct wl_listener *listener, void *data) {
-  struct diftray_output *output = wl_container_of(listener, output, request_state);
+  struct diftray_output *output =
+      wl_container_of(listener, output, request_state);
   const struct wlr_output_event_request_state *event = data;
   wlr_output_commit_state(output->output, event->state);
+  output->runtime->output_width = output->output->width;
+  output->runtime->output_height = output->output->height;
+  layout_overlay(output->runtime);
+  notify_output_geometry(output->runtime);
+}
+
+static void notify_output_geometry(struct diftray_wayland_runtime *runtime) {
+  if (runtime->output_handler) {
+    runtime->output_handler(runtime->output_userdata, runtime->output_width,
+                            runtime->output_height);
+  }
+}
+
+static void layout_overlay(struct diftray_wayland_runtime *runtime) {
+  if (!runtime->command_bar) {
+    return;
+  }
+  const int bar_height = runtime->style.command_bar_height;
+  const int width = runtime->output_width > 0 ? runtime->output_width : 1920;
+  const int height = runtime->output_height > 0 ? runtime->output_height : 1080;
+  wlr_scene_rect_set_size(runtime->background, width, height);
+  wlr_scene_rect_set_size(runtime->command_bar, width, bar_height);
+  wlr_scene_node_set_position(&runtime->command_bar->node, 0,
+                              height - bar_height);
+  if (runtime->command_bar_text) {
+    wlr_scene_node_set_position(&runtime->command_bar_text->node, 0,
+                                height - bar_height);
+  }
+  if (runtime->status_text) {
+    wlr_scene_node_set_position(&runtime->status_text->node, 0, 0);
+  }
 }
 
 static void output_destroy(struct wl_listener *listener, void *data) {
   struct diftray_output *output = wl_container_of(listener, output, destroy);
-  if (output->terminal_scene) {
-    wlr_scene_node_destroy(&output->terminal_scene->node);
-    output->terminal_scene = NULL;
-  }
-  if (output->terminal_buffer) {
-    wlr_buffer_drop(&output->terminal_buffer->base);
-    output->terminal_buffer = NULL;
-  }
+  (void)data;
   wl_list_remove(&output->frame.link);
   wl_list_remove(&output->request_state.link);
   wl_list_remove(&output->destroy.link);
@@ -407,7 +470,8 @@ static void new_output(struct wl_listener *listener, void *data) {
   struct diftray_wayland_runtime *runtime =
       wl_container_of(listener, runtime, new_output);
   struct wlr_output *wlr_output = data;
-  if (!wlr_output_init_render(wlr_output, runtime->allocator, runtime->renderer)) {
+  if (!wlr_output_init_render(wlr_output, runtime->allocator,
+                              runtime->renderer)) {
     return;
   }
 
@@ -437,55 +501,95 @@ static void new_output(struct wl_listener *listener, void *data) {
   output->scene_output = wlr_scene_output_create(runtime->scene, wlr_output);
   wlr_scene_output_layout_add_output(runtime->scene_layout, layout_output,
                                      output->scene_output);
-  output->terminal_scene =
-      wlr_scene_buffer_create(&runtime->scene->tree, NULL);
-  if (output->terminal_scene) {
-    wlr_scene_node_set_position(&output->terminal_scene->node, 0, 0);
-    /* The terminal buffer is created after the static scene nodes. Keep the
-     * command bar above it when the bar is toggled on. */
-    wlr_scene_node_raise_to_top(&runtime->command_bar->node);
-  }
-  wlr_scene_rect_set_size(runtime->background, wlr_output->width, wlr_output->height);
-  wlr_scene_rect_set_size(runtime->command_bar, wlr_output->width - 24,
-                          runtime->style.command_bar_height);
-  wlr_scene_node_set_position(&runtime->command_bar->node, 12,
-                              wlr_output->height - runtime->style.command_bar_height - 12);
-  render_terminal_buffer(runtime, output);
+
+  runtime->output_width = wlr_output->width;
+  runtime->output_height = wlr_output->height;
+  wlr_cursor_set_xcursor(runtime->cursor, runtime->cursor_mgr, "default");
+  layout_overlay(runtime);
+  notify_output_geometry(runtime);
 }
 
 static void toplevel_map(struct wl_listener *listener, void *data) {
   struct diftray_toplevel *toplevel = wl_container_of(listener, toplevel, map);
-  wl_list_insert(&toplevel->runtime->toplevels, &toplevel->link);
-  int offset = 24 + (int)wl_list_length(&toplevel->runtime->toplevels) * 24;
-  wlr_scene_node_set_position(&toplevel->tree->node, offset, offset);
-  focus_toplevel(toplevel);
+  (void)data;
+  toplevel->mapped = true;
+  layout_gcursor(toplevel->runtime, toplevel);
+  if (toplevel->runtime->gcursor_visible) {
+    wlr_scene_node_set_enabled(&toplevel->tree->node, true);
+    focus_toplevel(toplevel);
+  }
 }
 
 static void toplevel_unmap(struct wl_listener *listener, void *data) {
-  struct diftray_toplevel *toplevel = wl_container_of(listener, toplevel, unmap);
-  wl_list_remove(&toplevel->link);
+  struct diftray_toplevel *toplevel =
+      wl_container_of(listener, toplevel, unmap);
+  (void)data;
+  toplevel->mapped = false;
 }
 
 static void toplevel_commit(struct wl_listener *listener, void *data) {
-  struct diftray_toplevel *toplevel = wl_container_of(listener, toplevel, commit);
+  struct diftray_toplevel *toplevel =
+      wl_container_of(listener, toplevel, commit);
+  (void)data;
   if (toplevel->xdg_toplevel->base->initial_commit) {
-    wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 900, 600);
-  }
-  const struct wlr_box geometry = toplevel->xdg_toplevel->base->geometry;
-  if (geometry.width > 0 && geometry.height > 0) {
-    const int border = toplevel->runtime->style.border_size;
-    wlr_scene_rect_set_size(toplevel->border, geometry.width + border * 2,
-                            geometry.height + border * 2);
+    layout_gcursor(toplevel->runtime, toplevel);
   }
 }
 
+static void toplevel_request_minimize(struct wl_listener *listener, void *data) {
+  struct diftray_toplevel *toplevel =
+      wl_container_of(listener, toplevel, request_minimize);
+  (void)data;
+  if (toplevel->runtime->toplevel_request_handler) {
+    toplevel->runtime->toplevel_request_handler(
+        toplevel->runtime->toplevel_userdata, toplevel->xdg_toplevel,
+        "minimize");
+  }
+}
+
+static void toplevel_request_maximize(struct wl_listener *listener, void *data) {
+  struct diftray_toplevel *toplevel =
+      wl_container_of(listener, toplevel, request_maximize);
+  (void)data;
+  layout_gcursor(toplevel->runtime, toplevel);
+}
+
+static void toplevel_request_fullscreen(struct wl_listener *listener,
+                                        void *data) {
+  struct diftray_toplevel *toplevel =
+      wl_container_of(listener, toplevel, request_fullscreen);
+  (void)data;
+  layout_gcursor(toplevel->runtime, toplevel);
+}
+
 static void toplevel_destroy(struct wl_listener *listener, void *data) {
-  struct diftray_toplevel *toplevel = wl_container_of(listener, toplevel, destroy);
+  struct diftray_toplevel *toplevel =
+      wl_container_of(listener, toplevel, destroy);
+  (void)data;
+  if (toplevel->runtime->toplevel_destroy_handler) {
+    toplevel->runtime->toplevel_destroy_handler(
+        toplevel->runtime->toplevel_userdata, toplevel->xdg_toplevel);
+  }
   wl_list_remove(&toplevel->map.link);
   wl_list_remove(&toplevel->unmap.link);
   wl_list_remove(&toplevel->commit.link);
   wl_list_remove(&toplevel->destroy.link);
+  wl_list_remove(&toplevel->request_minimize.link);
+  wl_list_remove(&toplevel->request_maximize.link);
+  wl_list_remove(&toplevel->request_fullscreen.link);
+  wl_list_remove(&toplevel->link);
   free(toplevel);
+}
+
+static int client_pid_of(struct wlr_xdg_toplevel *xdg_toplevel) {
+  if (!xdg_toplevel || !xdg_toplevel->base || !xdg_toplevel->base->client ||
+      !xdg_toplevel->base->client->client) {
+    return -1;
+  }
+  pid_t pid = -1;
+  wl_client_get_credentials(xdg_toplevel->base->client->client, &pid, NULL,
+                            NULL);
+  return (int)pid;
 }
 
 static void new_toplevel(struct wl_listener *listener, void *data) {
@@ -495,27 +599,40 @@ static void new_toplevel(struct wl_listener *listener, void *data) {
   struct diftray_toplevel *toplevel = calloc(1, sizeof(*toplevel));
   toplevel->runtime = runtime;
   toplevel->xdg_toplevel = xdg_toplevel;
-  toplevel->tree = wlr_scene_tree_create(&runtime->scene->tree);
-  const int border = runtime->style.border_size;
-  toplevel->border =
-      wlr_scene_rect_create(toplevel->tree, 900 + border * 2, 600 + border * 2,
-                            runtime->style.border_color);
-  toplevel->surface_tree = wlr_scene_xdg_surface_create(toplevel->tree, xdg_toplevel->base);
-  wlr_scene_node_set_position(&toplevel->surface_tree->node, border, border);
+  toplevel->tree = wlr_scene_tree_create(runtime->gcursor_tree);
+  toplevel->surface_tree =
+      wlr_scene_xdg_surface_create(toplevel->tree, xdg_toplevel->base);
   xdg_toplevel->base->data = toplevel->surface_tree;
+  wlr_scene_node_set_enabled(&toplevel->tree->node, false);
 
   toplevel->map.notify = toplevel_map;
   toplevel->unmap.notify = toplevel_unmap;
   toplevel->commit.notify = toplevel_commit;
   toplevel->destroy.notify = toplevel_destroy;
+  toplevel->request_minimize.notify = toplevel_request_minimize;
+  toplevel->request_maximize.notify = toplevel_request_maximize;
+  toplevel->request_fullscreen.notify = toplevel_request_fullscreen;
   wl_signal_add(&xdg_toplevel->base->surface->events.map, &toplevel->map);
   wl_signal_add(&xdg_toplevel->base->surface->events.unmap, &toplevel->unmap);
   wl_signal_add(&xdg_toplevel->base->surface->events.commit, &toplevel->commit);
   wl_signal_add(&xdg_toplevel->events.destroy, &toplevel->destroy);
+  wl_signal_add(&xdg_toplevel->events.request_minimize,
+                &toplevel->request_minimize);
+  wl_signal_add(&xdg_toplevel->events.request_maximize,
+                &toplevel->request_maximize);
+  wl_signal_add(&xdg_toplevel->events.request_fullscreen,
+                &toplevel->request_fullscreen);
+  wl_list_insert(&runtime->toplevels, &toplevel->link);
+
+  if (runtime->toplevel_handler) {
+    runtime->toplevel_handler(runtime->toplevel_userdata, xdg_toplevel,
+                              client_pid_of(xdg_toplevel));
+  }
 }
 
 static void popup_commit(struct wl_listener *listener, void *data) {
   struct diftray_popup *popup = wl_container_of(listener, popup, commit);
+  (void)data;
   if (popup->popup->base->initial_commit) {
     wlr_xdg_surface_schedule_configure(popup->popup->base);
   }
@@ -523,12 +640,14 @@ static void popup_commit(struct wl_listener *listener, void *data) {
 
 static void popup_destroy(struct wl_listener *listener, void *data) {
   struct diftray_popup *popup = wl_container_of(listener, popup, destroy);
+  (void)data;
   wl_list_remove(&popup->commit.link);
   wl_list_remove(&popup->destroy.link);
   free(popup);
 }
 
 static void new_popup(struct wl_listener *listener, void *data) {
+  (void)listener;
   struct wlr_xdg_popup *xdg_popup = data;
   struct wlr_xdg_surface *parent =
       wlr_xdg_surface_try_from_wlr_surface(xdg_popup->parent);
@@ -548,6 +667,7 @@ static void new_popup(struct wl_listener *listener, void *data) {
 static void keyboard_modifiers(struct wl_listener *listener, void *data) {
   struct diftray_keyboard *keyboard =
       wl_container_of(listener, keyboard, modifiers);
+  (void)data;
   wlr_seat_set_keyboard(keyboard->runtime->seat, keyboard->keyboard);
   wlr_seat_keyboard_notify_modifiers(keyboard->runtime->seat,
                                      &keyboard->keyboard->modifiers);
@@ -560,31 +680,24 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
   int count = xkb_state_key_get_syms(keyboard->keyboard->xkb_state,
                                      event->keycode + 8, &symbols);
   uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->keyboard);
+  uint32_t unicode = xkb_state_key_get_utf32(keyboard->keyboard->xkb_state,
+                                             event->keycode + 8);
   bool handled = false;
-  if ((modifiers & WLR_MODIFIER_LOGO) &&
-      event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-    for (int index = 0; index < count; ++index) {
-      if (symbols[index] == XKB_KEY_Escape) {
-        wl_display_terminate(keyboard->runtime->display);
-        handled = true;
-      } else if (symbols[index] == XKB_KEY_colon ||
-                 symbols[index] == XKB_KEY_semicolon) {
-        keyboard->runtime->command_bar_visible =
-            !keyboard->runtime->command_bar_visible;
-        wlr_scene_node_set_enabled(&keyboard->runtime->command_bar->node,
-                                   keyboard->runtime->command_bar_visible);
-        handled = true;
-      }
+  const bool tracked = event->keycode < sizeof(keyboard->consumed_keys);
+  if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED && tracked) {
+    handled = keyboard->consumed_keys[event->keycode];
+    keyboard->consumed_keys[event->keycode] = false;
+  } else if (keyboard->runtime->key_handler) {
+    // A key may have multiple symbols, but represents a single key event.
+    handled = keyboard->runtime->key_handler(
+        keyboard->runtime->key_handler_userdata,
+        count > 0 ? symbols[0] : 0, modifiers, event->state, unicode,
+        event->time_msec, event->keycode);
+    if (tracked && event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+      keyboard->consumed_keys[event->keycode] = handled;
     }
   }
-  if (!handled) {
-    if (keyboard->runtime->key_handler) {
-      for (int index = 0; index < count; ++index) {
-        keyboard->runtime->key_handler(
-            keyboard->runtime->key_handler_userdata, symbols[index],
-            modifiers, event->state);
-      }
-    }
+  if (!handled && keyboard->runtime->gcursor_visible) {
     wlr_seat_set_keyboard(keyboard->runtime->seat, keyboard->keyboard);
     wlr_seat_keyboard_notify_key(keyboard->runtime->seat, event->time_msec,
                                  event->keycode, event->state);
@@ -594,6 +707,7 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
 static void keyboard_destroy(struct wl_listener *listener, void *data) {
   struct diftray_keyboard *keyboard =
       wl_container_of(listener, keyboard, destroy);
+  (void)data;
   wl_list_remove(&keyboard->modifiers.link);
   wl_list_remove(&keyboard->key.link);
   wl_list_remove(&keyboard->destroy.link);
@@ -601,13 +715,8 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
   free(keyboard);
 }
 
-static void new_input(struct wl_listener *listener, void *data) {
-  struct diftray_wayland_runtime *runtime =
-      wl_container_of(listener, runtime, new_input);
-  struct wlr_input_device *device = data;
-  if (device->type != WLR_INPUT_DEVICE_KEYBOARD) {
-    return;
-  }
+static void new_keyboard(struct diftray_wayland_runtime *runtime,
+                         struct wlr_input_device *device) {
   struct diftray_keyboard *keyboard = calloc(1, sizeof(*keyboard));
   keyboard->runtime = runtime;
   keyboard->keyboard = wlr_keyboard_from_input_device(device);
@@ -625,7 +734,220 @@ static void new_input(struct wl_listener *listener, void *data) {
   wl_signal_add(&device->events.destroy, &keyboard->destroy);
   wl_list_insert(&runtime->keyboards, &keyboard->link);
   wlr_seat_set_keyboard(runtime->seat, keyboard->keyboard);
-  wlr_seat_set_capabilities(runtime->seat, WL_SEAT_CAPABILITY_KEYBOARD);
+}
+
+static struct wlr_surface *gcursor_surface_at(
+    struct diftray_wayland_runtime *runtime, double lx, double ly, double *sx,
+    double *sy) {
+  if (!runtime->gcursor_visible) {
+    return NULL;
+  }
+  struct wlr_scene_node *node =
+      wlr_scene_node_at(&runtime->gcursor_tree->node, lx, ly, sx, sy);
+  if (!node || node->type != WLR_SCENE_NODE_BUFFER) {
+    return NULL;
+  }
+  struct wlr_scene_buffer *scene_buffer = wlr_scene_buffer_from_node(node);
+  struct wlr_scene_surface *scene_surface =
+      wlr_scene_surface_try_from_buffer(scene_buffer);
+  if (!scene_surface) {
+    return NULL;
+  }
+  return scene_surface->surface;
+}
+
+static void process_cursor_motion(struct diftray_wayland_runtime *runtime,
+                                  uint32_t time_msec) {
+  if (!runtime->gcursor_visible) {
+    wlr_seat_pointer_clear_focus(runtime->seat);
+    wlr_cursor_set_xcursor(runtime->cursor, runtime->cursor_mgr, "default");
+    return;
+  }
+  double sx = 0.0;
+  double sy = 0.0;
+  struct wlr_surface *surface = gcursor_surface_at(
+      runtime, runtime->cursor->x, runtime->cursor->y, &sx, &sy);
+  if (surface) {
+    wlr_seat_pointer_notify_enter(runtime->seat, surface, sx, sy);
+    wlr_seat_pointer_notify_motion(runtime->seat, time_msec, sx, sy);
+  } else {
+    wlr_seat_pointer_clear_focus(runtime->seat);
+    wlr_cursor_set_xcursor(runtime->cursor, runtime->cursor_mgr, "default");
+  }
+}
+
+static void cursor_motion(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, cursor_motion);
+  struct wlr_pointer_motion_event *event = data;
+  wlr_cursor_move(runtime->cursor, &event->pointer->base, event->delta_x,
+                  event->delta_y);
+  process_cursor_motion(runtime, event->time_msec);
+}
+
+static void cursor_motion_absolute(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, cursor_motion_absolute);
+  struct wlr_pointer_motion_absolute_event *event = data;
+  wlr_cursor_warp_absolute(runtime->cursor, &event->pointer->base, event->x,
+                           event->y);
+  process_cursor_motion(runtime, event->time_msec);
+}
+
+static void cursor_button(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, cursor_button);
+  struct wlr_pointer_button_event *event = data;
+  if (!runtime->gcursor_visible) {
+    return;
+  }
+  if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+    double sx = 0, sy = 0;
+    struct wlr_scene_node *hit = wlr_scene_node_at(
+        &runtime->gcursor_tree->node, runtime->cursor->x, runtime->cursor->y,
+        &sx, &sy);
+    if (hit) {
+      struct diftray_toplevel *top;
+      wl_list_for_each(top, &runtime->toplevels, link) {
+        for (struct wlr_scene_node *node = hit; node; node =
+                 node->parent ? &node->parent->node : NULL) {
+          if (node == &top->tree->node) {
+            focus_toplevel(top);
+            if (runtime->focus_handler) {
+              runtime->focus_handler(runtime->toplevel_userdata, top->xdg_toplevel);
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+  wlr_seat_pointer_notify_button(runtime->seat, event->time_msec,
+                                 event->button, event->state);
+}
+
+static void cursor_axis(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, cursor_axis);
+  struct wlr_pointer_axis_event *event = data;
+  if (!runtime->gcursor_visible) {
+    return;
+  }
+  wlr_seat_pointer_notify_axis(runtime->seat, event->time_msec,
+                               event->orientation, event->delta,
+                               event->delta_discrete, event->source,
+                               event->relative_direction);
+}
+
+static void cursor_frame(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, cursor_frame);
+  (void)data;
+  if (runtime->gcursor_visible) {
+    wlr_seat_pointer_notify_frame(runtime->seat);
+  }
+}
+
+static void seat_request_cursor(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, request_cursor);
+  struct wlr_seat_pointer_request_set_cursor_event *event = data;
+  struct wlr_seat_client *focused_client =
+      runtime->seat->pointer_state.focused_client;
+  if (focused_client == event->seat_client) {
+    wlr_cursor_set_surface(runtime->cursor, event->surface, event->hotspot_x,
+                           event->hotspot_y);
+  }
+}
+
+static void seat_request_set_selection(struct wl_listener *listener,
+                                       void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, request_set_selection);
+  struct wlr_seat_request_set_selection_event *event = data;
+  wlr_seat_set_selection(runtime->seat, event->source, event->serial);
+}
+
+static void new_input(struct wl_listener *listener, void *data) {
+  struct diftray_wayland_runtime *runtime =
+      wl_container_of(listener, runtime, new_input);
+  struct wlr_input_device *device = data;
+  switch (device->type) {
+  case WLR_INPUT_DEVICE_KEYBOARD:
+    new_keyboard(runtime, device);
+    break;
+  case WLR_INPUT_DEVICE_POINTER:
+    wlr_cursor_attach_input_device(runtime->cursor, device);
+    break;
+  default:
+    break;
+  }
+  uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+  if (!wl_list_empty(&runtime->keyboards)) {
+    caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+  }
+  wlr_seat_set_capabilities(runtime->seat, caps);
+}
+
+static void refresh_command_bar(struct diftray_wayland_runtime *runtime) {
+  if (!runtime->command_bar) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&runtime->command_bar->node,
+                             runtime->command_bar_visible);
+  const int width = runtime->output_width > 0 ? runtime->output_width : 800;
+  const int height = runtime->style.command_bar_height;
+  if (!runtime->command_bar_buffer ||
+      runtime->command_bar_buffer->base.width != width ||
+      runtime->command_bar_buffer->base.height != height) {
+    if (runtime->command_bar_buffer) {
+      wlr_buffer_drop(&runtime->command_bar_buffer->base);
+    }
+    runtime->command_bar_buffer = pixel_buffer_create(width, height);
+    if (!runtime->command_bar_text) {
+      runtime->command_bar_text =
+          wlr_scene_buffer_create(runtime->overlay_tree, NULL);
+    }
+  }
+  if (!runtime->command_bar_buffer || !runtime->command_bar_text) {
+    return;
+  }
+  render_chrome_text(runtime->command_bar_buffer,
+                     runtime->command_bar_text_copy,
+                     runtime->style.command_bar_color,
+                     runtime->style.border_color);
+  wlr_scene_buffer_set_buffer(runtime->command_bar_text,
+                              &runtime->command_bar_buffer->base);
+  wlr_scene_node_set_enabled(&runtime->command_bar_text->node,
+                             runtime->command_bar_visible);
+  layout_overlay(runtime);
+}
+
+static void refresh_status_line(struct diftray_wayland_runtime *runtime) {
+  const int width = runtime->output_width > 0 ? runtime->output_width : 800;
+  const int height = runtime->style.status_bar_height;
+  if (!runtime->status_buffer || runtime->status_buffer->base.width != width ||
+      runtime->status_buffer->base.height != height) {
+    if (runtime->status_buffer) {
+      wlr_buffer_drop(&runtime->status_buffer->base);
+    }
+    runtime->status_buffer = pixel_buffer_create(width, height);
+    if (!runtime->status_text) {
+      runtime->status_text =
+          wlr_scene_buffer_create(runtime->overlay_tree, NULL);
+    }
+  }
+  if (!runtime->status_buffer || !runtime->status_text) {
+    return;
+  }
+  float bg[4] = {runtime->style.background_color[0],
+                 runtime->style.background_color[1],
+                 runtime->style.background_color[2], 0.85f};
+  render_chrome_text(runtime->status_buffer, runtime->status_line, bg,
+                     runtime->style.border_color);
+  wlr_scene_buffer_set_buffer(runtime->status_text,
+                              &runtime->status_buffer->base);
+  layout_overlay(runtime);
 }
 
 struct diftray_wayland_runtime *diftray_wayland_runtime_create(
@@ -633,6 +955,12 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
   struct diftray_wayland_runtime *runtime = calloc(1, sizeof(*runtime));
   runtime->display = display;
   runtime->style = *style;
+  if (runtime->style.highlight_color[3] <= 0.0f) {
+    runtime->style.highlight_color[0] = 1.0f;
+    runtime->style.highlight_color[1] = 0.72f;
+    runtime->style.highlight_color[2] = 0.18f;
+    runtime->style.highlight_color[3] = 1.0f;
+  }
   wl_list_init(&runtime->outputs);
   wl_list_init(&runtime->keyboards);
   wl_list_init(&runtime->toplevels);
@@ -645,8 +973,9 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
   }
   runtime->renderer = wlr_renderer_autocreate(runtime->backend);
   runtime->allocator =
-      runtime->renderer ? wlr_allocator_autocreate(runtime->backend, runtime->renderer)
-                        : NULL;
+      runtime->renderer
+          ? wlr_allocator_autocreate(runtime->backend, runtime->renderer)
+          : NULL;
   if (!runtime->renderer || !runtime->allocator) {
     diftray_wayland_runtime_destroy(runtime);
     return NULL;
@@ -659,25 +988,50 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
   runtime->scene = wlr_scene_create();
   runtime->scene_layout =
       wlr_scene_attach_output_layout(runtime->scene, runtime->output_layout);
-  runtime->background =
-      wlr_scene_rect_create(&runtime->scene->tree, 1920, 1080,
-                            runtime->style.background_color);
-  runtime->command_bar =
-      wlr_scene_rect_create(&runtime->scene->tree, 1896,
-                            runtime->style.command_bar_height,
-                            runtime->style.command_bar_color);
+  runtime->background = wlr_scene_rect_create(
+      &runtime->scene->tree, 1920, 1080, runtime->style.background_color);
+  runtime->ncursor_tree = wlr_scene_tree_create(&runtime->scene->tree);
+  runtime->gcursor_tree = wlr_scene_tree_create(&runtime->scene->tree);
+  runtime->overlay_tree = wlr_scene_tree_create(&runtime->scene->tree);
+  runtime->command_bar = wlr_scene_rect_create(
+      runtime->overlay_tree, 1920, runtime->style.command_bar_height,
+      runtime->style.command_bar_color);
   wlr_scene_node_set_enabled(&runtime->command_bar->node, false);
-  runtime->terminal_text = strdup("DiftrayWM\n");
+  wlr_scene_node_set_enabled(&runtime->gcursor_tree->node, false);
   runtime->xdg_shell = wlr_xdg_shell_create(display, 3);
   runtime->seat = wlr_seat_create(display, "seat0");
+  runtime->cursor = wlr_cursor_create();
+  wlr_cursor_attach_output_layout(runtime->cursor, runtime->output_layout);
+  runtime->cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+  wlr_xcursor_manager_load(runtime->cursor_mgr, 1);
+
   runtime->new_output.notify = new_output;
   runtime->new_input.notify = new_input;
   runtime->new_toplevel.notify = new_toplevel;
   runtime->new_popup.notify = new_popup;
+  runtime->request_cursor.notify = seat_request_cursor;
+  runtime->request_set_selection.notify = seat_request_set_selection;
+  runtime->cursor_motion.notify = cursor_motion;
+  runtime->cursor_motion_absolute.notify = cursor_motion_absolute;
+  runtime->cursor_button.notify = cursor_button;
+  runtime->cursor_axis.notify = cursor_axis;
+  runtime->cursor_frame.notify = cursor_frame;
   wl_signal_add(&runtime->backend->events.new_output, &runtime->new_output);
   wl_signal_add(&runtime->backend->events.new_input, &runtime->new_input);
-  wl_signal_add(&runtime->xdg_shell->events.new_toplevel, &runtime->new_toplevel);
+  wl_signal_add(&runtime->xdg_shell->events.new_toplevel,
+                &runtime->new_toplevel);
   wl_signal_add(&runtime->xdg_shell->events.new_popup, &runtime->new_popup);
+  wl_signal_add(&runtime->seat->events.request_set_cursor,
+                &runtime->request_cursor);
+  wl_signal_add(&runtime->seat->events.request_set_selection,
+                &runtime->request_set_selection);
+  wl_signal_add(&runtime->cursor->events.motion, &runtime->cursor_motion);
+  wl_signal_add(&runtime->cursor->events.motion_absolute,
+                &runtime->cursor_motion_absolute);
+  wl_signal_add(&runtime->cursor->events.button, &runtime->cursor_button);
+  wl_signal_add(&runtime->cursor->events.axis, &runtime->cursor_axis);
+  wl_signal_add(&runtime->cursor->events.frame, &runtime->cursor_frame);
+  runtime->status_line = strdup("DiftrayWM ncursor");
   return runtime;
 }
 
@@ -695,26 +1049,261 @@ void diftray_wayland_runtime_set_key_handler(
   runtime->key_handler_userdata = userdata;
 }
 
-void diftray_wayland_runtime_set_terminal_text(
+void diftray_wayland_runtime_set_toplevel_handler(
+    struct diftray_wayland_runtime *runtime,
+    diftray_wayland_toplevel_handler handler,
+    diftray_wayland_toplevel_destroy_handler destroy_handler,
+    diftray_wayland_toplevel_request_handler request_handler, void *userdata) {
+  if (!runtime) {
+    return;
+  }
+  runtime->toplevel_handler = handler;
+  runtime->toplevel_destroy_handler = destroy_handler;
+  runtime->toplevel_request_handler = request_handler;
+  runtime->toplevel_userdata = userdata;
+}
+
+void diftray_wayland_runtime_set_focus_handler(
+    struct diftray_wayland_runtime *runtime,
+    diftray_wayland_toplevel_focus_handler handler) {
+  if (runtime) runtime->focus_handler = handler;
+}
+
+void diftray_wayland_runtime_set_output_handler(
+    struct diftray_wayland_runtime *runtime,
+    diftray_wayland_output_handler handler, void *userdata) {
+  if (!runtime) {
+    return;
+  }
+  runtime->output_handler = handler;
+  runtime->output_userdata = userdata;
+  if (runtime->output_width > 0 && runtime->output_height > 0) {
+    handler(userdata, runtime->output_width, runtime->output_height);
+  }
+}
+
+bool diftray_wayland_runtime_output_size(struct diftray_wayland_runtime *runtime,
+                                         int *width, int *height) {
+  if (!runtime) {
+    return false;
+  }
+  if (width) {
+    *width = runtime->output_width;
+  }
+  if (height) {
+    *height = runtime->output_height;
+  }
+  return runtime->output_width > 0 && runtime->output_height > 0;
+}
+
+void diftray_wayland_runtime_set_ncursor_visible(
+    struct diftray_wayland_runtime *runtime, bool visible) {
+  if (!runtime) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&runtime->ncursor_tree->node, visible);
+}
+
+void diftray_wayland_runtime_set_gcursor_visible(
+    struct diftray_wayland_runtime *runtime, bool visible) {
+  if (!runtime) {
+    return;
+  }
+  runtime->gcursor_visible = visible;
+  wlr_scene_node_set_enabled(&runtime->gcursor_tree->node, visible);
+  if (!visible) {
+    wlr_seat_pointer_clear_focus(runtime->seat);
+    wlr_seat_keyboard_clear_focus(runtime->seat);
+  }
+}
+
+struct diftray_cell_surface *diftray_cell_surface_create(
+    struct diftray_wayland_runtime *runtime) {
+  if (!runtime) {
+    return NULL;
+  }
+  struct diftray_cell_surface *surface = calloc(1, sizeof(*surface));
+  surface->runtime = runtime;
+  surface->tree = wlr_scene_tree_create(runtime->ncursor_tree);
+  surface->border = wlr_scene_rect_create(surface->tree, 1, 1,
+                                          runtime->style.border_color);
+  surface->highlight = wlr_scene_rect_create(surface->tree, 1, 1,
+                                             runtime->style.highlight_color);
+  wlr_scene_node_set_enabled(&surface->highlight->node, false);
+  surface->buffer_node = wlr_scene_buffer_create(surface->tree, NULL);
+  return surface;
+}
+
+void diftray_cell_surface_destroy(struct diftray_cell_surface *surface) {
+  if (!surface) {
+    return;
+  }
+  if (surface->tree) {
+    wlr_scene_node_destroy(&surface->tree->node);
+  }
+  if (surface->buffer) {
+    wlr_buffer_drop(&surface->buffer->base);
+  }
+  free(surface);
+}
+
+void diftray_cell_surface_place(struct diftray_cell_surface *surface, int x,
+                                int y, int width, int height) {
+  if (!surface) {
+    return;
+  }
+  surface->x = x;
+  surface->y = y;
+  surface->width = width;
+  surface->height = height;
+  const int border = surface->runtime->style.border_size;
+  wlr_scene_rect_set_color(surface->border, surface->runtime->style.border_color);
+  wlr_scene_rect_set_color(surface->highlight, surface->runtime->style.highlight_color);
+  wlr_scene_node_set_position(&surface->tree->node, x, y);
+  wlr_scene_rect_set_size(surface->border, width, height);
+  wlr_scene_rect_set_size(surface->highlight, width, height);
+  wlr_scene_node_set_position(&surface->buffer_node->node, border, border);
+}
+
+bool diftray_cell_surface_update(struct diftray_cell_surface *surface,
+                                 const uint32_t *pixels, int width,
+                                 int height) {
+  if (!surface || !pixels || width <= 0 || height <= 0) {
+    return false;
+  }
+  if (!surface->buffer || surface->buffer->base.width != width ||
+      surface->buffer->base.height != height) {
+    if (surface->buffer) {
+      wlr_buffer_drop(&surface->buffer->base);
+    }
+    surface->buffer = pixel_buffer_create(width, height);
+    if (!surface->buffer) {
+      return false;
+    }
+  }
+  memcpy(surface->buffer->pixels, pixels,
+         (size_t)width * (size_t)height * sizeof(uint32_t));
+  wlr_scene_buffer_set_buffer(surface->buffer_node, &surface->buffer->base);
+  return true;
+}
+
+void diftray_cell_surface_set_highlight(struct diftray_cell_surface *surface,
+                                        bool highlighted) {
+  if (!surface) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&surface->highlight->node, highlighted);
+}
+
+void diftray_cell_surface_set_visible(struct diftray_cell_surface *surface,
+                                      bool visible) {
+  if (!surface) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&surface->tree->node, visible);
+}
+
+void diftray_wayland_runtime_attach_gcursor(
+    struct diftray_wayland_runtime *runtime,
+    struct wlr_xdg_toplevel *toplevel) {
+  struct diftray_toplevel *found = toplevel_from_xdg(runtime, toplevel);
+  if (!found) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&found->tree->node, true);
+  layout_gcursor(runtime, found);
+  focus_toplevel(found);
+}
+
+void diftray_wayland_runtime_set_gcursor_visible_surface(
+    struct diftray_wayland_runtime *runtime,
+    struct wlr_xdg_toplevel *toplevel, bool visible) {
+  struct diftray_toplevel *found = toplevel_from_xdg(runtime, toplevel);
+  if (!found) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&found->tree->node, visible);
+}
+
+void diftray_wayland_runtime_focus_gcursor(
+    struct diftray_wayland_runtime *runtime,
+    struct wlr_xdg_toplevel *toplevel) {
+  struct diftray_toplevel *found = toplevel_from_xdg(runtime, toplevel);
+  if (!found) {
+    return;
+  }
+  layout_gcursor(runtime, found);
+  focus_toplevel(found);
+}
+
+void diftray_wayland_runtime_layout_gcursor(
+    struct diftray_wayland_runtime *runtime, struct wlr_xdg_toplevel *toplevel,
+    int x, int y, int width, int height) {
+  struct diftray_toplevel *found = toplevel_from_xdg(runtime, toplevel);
+  if (!found) return;
+  found->x = x;
+  found->y = y;
+  found->width = width;
+  found->height = height;
+  layout_gcursor(runtime, found);
+}
+
+void diftray_wayland_runtime_clear_keyboard_focus(
+    struct diftray_wayland_runtime *runtime) {
+  if (runtime) {
+    wlr_seat_keyboard_clear_focus(runtime->seat);
+  }
+}
+
+void diftray_wayland_runtime_set_style(struct diftray_wayland_runtime *runtime,
+                                      const struct diftray_wayland_style *style) {
+  if (!runtime || !style) {
+    return;
+  }
+  runtime->style = *style;
+  wlr_scene_rect_set_color(runtime->background, style->background_color);
+  wlr_scene_rect_set_color(runtime->command_bar, style->command_bar_color);
+  layout_overlay(runtime);
+  refresh_command_bar(runtime);
+  refresh_status_line(runtime);
+}
+
+void diftray_wayland_runtime_set_command_bar(
+    struct diftray_wayland_runtime *runtime, bool visible, const char *text) {
+  if (!runtime) {
+    return;
+  }
+  runtime->command_bar_visible = visible;
+  free(runtime->command_bar_text_copy);
+  runtime->command_bar_text_copy = strdup(text ? text : "");
+  refresh_command_bar(runtime);
+}
+
+void diftray_wayland_runtime_set_status_line(
     struct diftray_wayland_runtime *runtime, const char *text) {
   if (!runtime) {
     return;
   }
-  char *copy = strdup(text ? text : "");
-  if (!copy) {
-    return;
-  }
-  free(runtime->terminal_text);
-  runtime->terminal_text = copy;
-  struct diftray_output *output;
-  wl_list_for_each(output, &runtime->outputs, link) {
-    render_terminal_buffer(runtime, output);
-  }
+  free(runtime->status_line);
+  runtime->status_line = strdup(text ? text : "");
+  refresh_status_line(runtime);
 }
 
 void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime) {
   if (!runtime) {
     return;
+  }
+  if (runtime->command_bar_buffer) {
+    wlr_buffer_drop(&runtime->command_bar_buffer->base);
+  }
+  if (runtime->status_buffer) {
+    wlr_buffer_drop(&runtime->status_buffer->base);
+  }
+  if (runtime->cursor_mgr) {
+    wlr_xcursor_manager_destroy(runtime->cursor_mgr);
+  }
+  if (runtime->cursor) {
+    wlr_cursor_destroy(runtime->cursor);
   }
   if (runtime->backend) {
     wlr_backend_destroy(runtime->backend);
@@ -731,6 +1320,7 @@ void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime) {
   if (runtime->renderer) {
     wlr_renderer_destroy(runtime->renderer);
   }
-  free(runtime->terminal_text);
+  free(runtime->command_bar_text_copy);
+  free(runtime->status_line);
   free(runtime);
 }

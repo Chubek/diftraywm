@@ -1,13 +1,11 @@
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
+#include "nterm/GlyphRenderer.hpp"
 
 class GlyphAtlas {
 public:
-  struct Key {
-    unsigned int glyph_index = 0;
-    unsigned int font_size = 0;
-    std::uint32_t color = 0;
-  };
+  const GlyphRenderer::Glyph *get(GlyphRenderer &renderer, uint32_t codepoint,
+                                  bool bold) {
+    return renderer.glyph(codepoint, bold);
+  }
 };

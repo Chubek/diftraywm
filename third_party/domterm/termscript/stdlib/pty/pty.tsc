@@ -1,0 +1,22 @@
+# pty.tsc -- Termscript companion for std.pty.
+#
+# Binds the module and the signal names worth naming.  A PTY host normally
+# wants a non-blocking read, so `pty_read` is the entry point to reach for
+# rather than `read`, which blocks until the child writes or exits.
+const pty_m = G:load "std.pty" or G:die "std.pty missing";
+
+# Signals by name; `signal` also takes the number directly.
+const pty_sig_hup = "HUP";
+const pty_sig_int = "INT";
+const pty_sig_quit = "QUIT";
+const pty_sig_kill = "KILL";
+const pty_sig_term = "TERM";
+const pty_sig_stop = "STOP";
+const pty_sig_tstp = "TSTP";
+const pty_sig_cont = "CONT";
+const pty_sig_winch = "WINCH";
+
+# A conventional 24x80 grid for a freshly spawned child, so full-screen
+# programs do not start out with a 0x0 window size.
+const pty_rows = 24;
+const pty_cols = 80;

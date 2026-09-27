@@ -93,10 +93,15 @@ bool ThemeEngine::parse_css(std::string_view css, ThemeProperties &out) {
 
   for (char ch : css) {
     if (ch == '{') {
+      key.clear(); // The selector is not a property name.
       in_block = true;
       continue;
     }
     if (ch == '}') {
+      if (!in_block) {
+        last_error_ = "unexpected closing brace";
+        return false;
+      }
       if (!commit()) {
         return false;
       }
@@ -104,12 +109,16 @@ bool ThemeEngine::parse_css(std::string_view css, ThemeProperties &out) {
       continue;
     }
     if (ch == ';') {
+      if (!in_block) {
+        last_error_ = "declaration outside a CSS block";
+        return false;
+      }
       if (!commit()) {
         return false;
       }
       continue;
     }
-    if (!in_value && ch == ':') {
+    if (in_block && !in_value && ch == ':') {
       in_value = true;
       continue;
     }
@@ -119,7 +128,10 @@ bool ThemeEngine::parse_css(std::string_view css, ThemeProperties &out) {
       key.push_back(ch);
     }
   }
-
+  if (in_block) {
+    last_error_ = "unclosed CSS block";
+    return false;
+  }
   if (!commit()) {
     return false;
   }

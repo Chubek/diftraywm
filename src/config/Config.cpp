@@ -47,7 +47,7 @@ bool parse_color(std::string_view value, float out[4]) {
     const auto component = value.substr(1 + index * 2, 2);
     const auto result = std::from_chars(component.data(), component.data() + component.size(),
                                         channels[index], 16);
-    if (result.ec != std::errc()) {
+    if (result.ec != std::errc() || result.ptr != component.data() + component.size()) {
       return false;
     }
   }
@@ -94,6 +94,11 @@ bool load_compositor_config(const std::string &path, CompositorConfig &config,
         error = "command_bar_height must be a positive integer";
         return false;
       }
+    } else if (key == "status_bar_height") {
+      if (!parse_int(value, config.status_bar_height) || config.status_bar_height < 1) {
+        error = "status_bar_height must be a positive integer";
+        return false;
+      }
     } else if (key == "border_color") {
       if (!parse_color(value, config.border_color)) {
         error = "border_color must be #RRGGBB or #RRGGBBAA";
@@ -111,6 +116,27 @@ bool load_compositor_config(const std::string &path, CompositorConfig &config,
       }
     } else if (key == "shell") {
       config.shell = value;
+    } else if (key == "font") {
+      config.font = value;
+    } else if (key == "font_size") {
+      if (!parse_int(value, config.font_size) || config.font_size < 8) {
+        error = "font_size must be an integer >= 8";
+        return false;
+      }
+    } else if (key == "ncursor_mode" || key == "gcursor_mode") {
+      if (value != "stack" && value != "tab") {
+        error = key + " must be stack or tab";
+        return false;
+      }
+      if (key == "ncursor_mode") {
+        config.ncursor_mode = value;
+      } else {
+        config.gcursor_mode = value;
+      }
+    } else if (key == "word_pool") {
+      config.word_pool = value;
+    } else if (key == "theme") {
+      config.theme = value;
     }
   }
   return true;

@@ -72,7 +72,13 @@ std::string pick_word(std::string desired) {
       return candidate;
     }
   }
-  return "cursor";
+  // The dictionary can be shorter than the number of live windows.
+  for (std::size_t suffix = 1;; ++suffix) {
+    std::string candidate = "cursor-" + std::to_string(suffix);
+    if (word_pool.live_ids.insert(candidate).second) {
+      return candidate;
+    }
+  }
 }
 
 void release_word(const std::string &word) {
@@ -106,3 +112,9 @@ void GCursorView::restore() {
   }
 }
 void GCursorView::dock() { docked_ = true; }
+void GCursorView::set_toplevel(wlr_xdg_toplevel *toplevel) { toplevel_ = toplevel; }
+wlr_xdg_toplevel *GCursorView::toplevel() const { return toplevel_; }
+void GCursorView::set_owner_cell(Cell *cell) { owner_cell_ = cell; }
+Cell *GCursorView::owner_cell() const { return owner_cell_; }
+void GCursorView::set_owner_ncursor(NCursorView *view) { owner_ncursor_ = view; }
+NCursorView *GCursorView::owner_ncursor() const { return owner_ncursor_; }

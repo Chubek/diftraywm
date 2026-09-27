@@ -120,9 +120,31 @@ bool NCursorView::move_selected_cell(int delta) {
   return true;
 }
 
-bool NCursorView::select_next_cell() { return move_selected_cell(1); }
+bool NCursorView::select_next_cell() {
+  if (cell_stacks_.empty() || selected_stack_index_ >= cell_stacks_.size()) {
+    return false;
+  }
+  auto &stack = cell_stacks_[selected_stack_index_];
+  if (stack.cells.empty() || stack.active_index + 1 >= stack.cells.size()) {
+    return false;
+  }
+  ++stack.active_index;
+  selected_cell_index_ = static_cast<int>(stack.active_index);
+  return true;
+}
 
-bool NCursorView::select_previous_cell() { return move_selected_cell(-1); }
+bool NCursorView::select_previous_cell() {
+  if (cell_stacks_.empty() || selected_stack_index_ >= cell_stacks_.size()) {
+    return false;
+  }
+  auto &stack = cell_stacks_[selected_stack_index_];
+  if (stack.cells.empty() || stack.active_index == 0) {
+    return false;
+  }
+  --stack.active_index;
+  selected_cell_index_ = static_cast<int>(stack.active_index);
+  return true;
+}
 
 bool NCursorView::select_cell(Cell *cell) {
   for (std::size_t stack_index = 0; stack_index < cell_stacks_.size(); ++stack_index) {

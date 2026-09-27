@@ -8,6 +8,8 @@
 
 #include <memory>
 #include <sstream>
+#include <string>
+#include <exception>
 
 std::string join_tokens(const std::vector<std::string> &tokens, std::size_t start) {
   std::ostringstream out;
@@ -71,7 +73,13 @@ public:
     if (tokens[1] == "down") {
       return context.compositor->move_selected_cell(1);
     }
-    return "move supports: up, down";
+    if (tokens[1] == "left") {
+      return context.compositor->cycle_tab(-1);
+    }
+    if (tokens[1] == "right") {
+      return context.compositor->cycle_tab(1);
+    }
+    return "move supports: up, down, left, right";
   }
 };
 
@@ -132,7 +140,45 @@ public:
     if (tokens[1] == "list" && tokens.size() >= 3 && tokens[2] == "ids") {
       return context.compositor->list_cursor_ids();
     }
-    return "cursor supports: dock, restore, list ids";
+    if (tokens[1] == "assign" && tokens.size() >= 4) {
+      int slot = -1;
+      const auto &key = tokens[3];
+      if (key == "F1" || key == "f1" || key == "1") slot = 0;
+      else if (key == "F2" || key == "f2" || key == "2") slot = 1;
+      else if (key == "F3" || key == "f3" || key == "3") slot = 2;
+      else if (key == "F4" || key == "f4" || key == "4") slot = 3;
+      return context.compositor->assign_cursor_slot(tokens[2], slot);
+    }
+    return "cursor supports: dock, restore, list ids, assign";
+  }
+};
+
+class CursorsHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "cursors"; }
+
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) {
+      return "cursors command unavailable";
+    }
+    if (tokens.size() >= 3 && tokens[1] == "view" && tokens[2] == "docked") {
+      return context.compositor->list_docked_cursors();
+    }
+    return "cursors supports: view docked";
+  }
+};
+
+class LaunchHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "launch"; }
+
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) {
+      return "launch unavailable";
+    }
+    return context.compositor->launch_program(join_tokens(tokens, 1));
   }
 };
 
@@ -168,9 +214,70 @@ public:
       return "theme command unavailable";
     }
     if (tokens.size() < 3 || tokens[1] != "load") {
-      return "theme supports: load <css>";
+      return "theme supports: load <path>";
     }
-    return context.compositor->apply_theme_css(join_tokens(tokens, 2));
+    return context.compositor->load_theme_file(join_tokens(tokens, 2));
+  }
+};
+
+class NoteletHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "notelet"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "notelets unavailable";
+    if (tokens.size() == 2 && tokens[1] == "list")
+      return context.compositor->list_notelets();
+    if (tokens.size() == 2 && tokens[1] == "close")
+      return context.compositor->close_notelet();
+    if (tokens.size() == 3 && tokens[1] == "open")
+      return context.compositor->open_notelet(tokens[2]);
+    return "notelet supports: list, open <name>, close";
+  }
+};
+
+class TabHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "tab"; }
+
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) {
+      return "tab command unavailable";
+    }
+    if (tokens.size() < 2) {
+      return "tab requires next or prev";
+    }
+    if (tokens[1] == "next" || tokens[1] == "right") {
+      return context.compositor->cycle_tab(1);
+    }
+    if (tokens[1] == "prev" || tokens[1] == "previous" || tokens[1] == "left") {
+      return context.compositor->cycle_tab(-1);
+    }
+    return "tab supports: next, prev";
+  }
+};
+
+class WorkspaceHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override {
+    return command == "workspace";
+  }
+
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) {
+      return "workspace command unavailable";
+    }
+    if (tokens.size() < 2) {
+      return "workspace " + std::to_string(context.compositor->current_workspace());
+    }
+    try {
+      const int number = std::stoi(tokens[1]);
+      return context.compositor->switch_workspace(number);
+    } catch (const std::exception &) {
+      return "workspace requires a number 1-10";
+    }
   }
 };
 
@@ -180,6 +287,11 @@ void register_builtin_handlers(CommandBar &bar) {
   bar.register_handler(std::make_unique<MoveHandler>());
   bar.register_handler(std::make_unique<CellHandler>());
   bar.register_handler(std::make_unique<CursorHandler>());
+  bar.register_handler(std::make_unique<CursorsHandler>());
+  bar.register_handler(std::make_unique<LaunchHandler>());
   bar.register_handler(std::make_unique<SetHandler>());
   bar.register_handler(std::make_unique<ThemeHandler>());
+  bar.register_handler(std::make_unique<NoteletHandler>());
+  bar.register_handler(std::make_unique<TabHandler>());
+  bar.register_handler(std::make_unique<WorkspaceHandler>());
 }

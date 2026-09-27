@@ -1,0 +1,26 @@
+{
+  "name": "Aurocks GLR test",
+  "version": 1,
+  "pi": 3.14159,
+  "negative": -42,
+  "exponent": 6.02e23,
+  "active": true,
+  "deleted": false,
+  "notes": null,
+  "tags": ["parser", "glr", "json"],
+  "empty_array": [],
+  "empty_object": {},
+  "matrix": [
+    [1, 2, 3],
+    [4, 5, 6]
+  ],
+  "author": {
+    "first": "Ada",
+    "last": "Lovelace",
+    "contact": {
+      "email": "ada@example.com",
+      "verified": true
+    }
+  },
+  "mixed": [1, "two", 3.0, false, null, {"nested": []}]
+}

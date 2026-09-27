@@ -1,4 +1,22 @@
 add_executable(diftraywm_smoke_test smoke.cpp)
 target_compile_features(diftraywm_smoke_test PRIVATE cxx_std_20)
-target_include_directories(diftraywm_smoke_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(diftraywm_smoke_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../src
+  ${DIFTRAY_THIRD_PARTY}/wlroots/include
+)
+target_link_libraries(diftraywm_smoke_test PRIVATE diftraywm_views)
 add_test(NAME diftraywm_smoke_test COMMAND diftraywm_smoke_test)
+
+add_executable(diftraywm_navigation_test navigation.cpp)
+diftraywm_target_defaults(diftraywm_navigation_test)
+diftraywm_link_exe(diftraywm_navigation_test)
+add_test(NAME diftraywm_navigation_test COMMAND diftraywm_navigation_test)
+
+add_executable(diftraywm_notelet_test notelet.cpp)
+diftraywm_target_defaults(diftraywm_notelet_test)
+target_link_libraries(diftraywm_notelet_test PRIVATE diftraywm_notelet)
+target_compile_definitions(diftraywm_notelet_test PRIVATE
+  DIFTRAY_BUNDLED_NOTELETS_DIR="${DIFTRAY_BUNDLED_NOTELETS_DIR}")
+add_dependencies(diftraywm_notelet_test diftraywm_bundled_notelets)
+add_test(NAME diftraywm_notelet_test COMMAND diftraywm_notelet_test)

@@ -7,6 +7,8 @@
 
 #include <wlr/util/box.h>
 
+struct diftray_cell_surface;
+
 class NTerm;
 
 enum class CellState {
@@ -30,6 +32,8 @@ public:
   const CursorArea &cursor_area() const;
   void set_shell_override(std::string shell_override);
   const std::string &shell_override() const;
+  void set_surface(diftray_cell_surface *surface);
+  diftray_cell_surface *surface() const;
 
 private:
   std::string id_;
@@ -38,4 +42,5 @@ private:
   std::unique_ptr<NTerm> nterm_;
   CursorArea cursor_area_;
   std::string shell_override_;
+  diftray_cell_surface *surface_ = nullptr;
 };

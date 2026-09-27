@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstddef>
-#include <deque>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -10,9 +10,7 @@
 
 struct tsm_screen;
 struct tsm_vte;
-struct vterm_s;
-using vterm_t = vterm_s;
-struct wl_event_source;
+struct _vterm_s;
 
 class NTerm {
 public:
@@ -26,28 +24,35 @@ public:
   void on_readable();
   void resize(std::size_t columns, std::size_t rows);
   void feed_input(std::string_view bytes);
-  void append_output(std::string_view bytes);
+  // Render compositor-owned terminal content without writing to a PTY.
+  void display(std::string_view bytes);
+  bool handle_key(uint32_t keysym, uint32_t ascii, unsigned int mods,
+                  uint32_t unicode);
   void set_shell_path(std::string shell_path);
   int master_fd() const;
   pid_t child_pid() const;
   const std::string &shell_path() const;
   std::size_t columns() const;
   std::size_t rows() const;
-  const std::deque<std::string> &scrollback() const;
-  const std::string &input_buffer() const;
+  tsm_screen *screen() const;
+  bool consume_dirty();
+  bool owns_pid(pid_t pid) const;
 
 private:
+  static void vte_write(tsm_vte *vte, const char *u8, size_t len, void *data);
+  bool spawn_shell();
+  void feed_parsers(std::string_view bytes);
+
+  void *ptytty_handle_ = nullptr;
   int master_fd_ = -1;
   pid_t child_pid_ = -1;
   std::string shell_path_;
   tsm_screen *screen_ = nullptr;
   tsm_vte *vte_ = nullptr;
-  vterm_t *vterm_ = nullptr;
-  wl_event_source *readable_source_ = nullptr;
+  struct _vterm_s *vterm_ = nullptr;
   std::size_t columns_ = 80;
   std::size_t rows_ = 24;
-  std::deque<std::string> scrollback_;
-  std::string input_buffer_;
   std::string last_error_;
   bool running_ = false;
+  bool dirty_ = true;
 };

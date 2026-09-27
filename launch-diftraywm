@@ -1,13 +1,20 @@
 #!/usr/bin/env sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+binary="$root_dir/build/diftraywm"
+if [ ! -x "$binary" ]; then
+  binary="$root_dir/../../build/domutils/diftray/diftraywm"
+fi
+if [ ! -x "$binary" ]; then
+  echo "diftray binary not found; build it first" >&2
+  exit 1
+fi
 
 runtime_dir=${XDG_RUNTIME_DIR:-/tmp/diftray-runtime}
 if [ ! -d "$runtime_dir" ]; then
-	mkdir -p "$runtime_dir"
-	chmod 700 "$runtime_dir"
+  mkdir -p "$runtime_dir"
+  chmod 700 "$runtime_dir"
 fi
 
-XDG_RUNTIME_DIR="$runtime_dir" \
-	WLR_BACKENDS=headless \
-	WLR_HEADLESS_OUTPUTS=1 \
-	WLR_RENDERER=pixman \
-	./build/diftray
+XDG_RUNTIME_DIR="$runtime_dir"   WLR_BACKENDS="${WLR_BACKENDS:-headless}"   WLR_HEADLESS_OUTPUTS="${WLR_HEADLESS_OUTPUTS:-1}"   WLR_RENDERER="${WLR_RENDERER:-pixman}"   exec "$binary" "$@"

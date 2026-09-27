@@ -4,6 +4,7 @@
 #include "views/CursorArea.hpp"
 #include "views/View.hpp"
 
+#include <string>
 #include <vector>
 
 #include <wlr/util/box.h>
@@ -40,6 +41,10 @@ public:
   bool select_next_cell();
   bool select_previous_cell();
   bool select_cell(Cell *cell);
+  const std::string &id() const { return id_; }
+  void set_id(std::string id) { id_ = std::move(id); }
+  int workspace() const { return workspace_; }
+  void set_workspace(int workspace) { workspace_ = workspace; }
 
 private:
   std::vector<CellStack> cell_stacks_;
@@ -48,4 +53,6 @@ private:
   int selected_cell_index_ = 0;
   std::size_t selected_stack_index_ = 0;
   wlr_box output_box_{};
+  std::string id_ = "ncursor";
+  int workspace_ = 1;
 };

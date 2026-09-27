@@ -1,0 +1,10 @@
+const count = notelet:get "count" or "0";
+G:puts "Hello from a Notelet!";
+const message = notelet:resource "message.txt";
+G:puts message;
+G:puts "Press a key to update this view; use :notelet close to return.";
+G:puts "Last key:";
+G:puts notelet_key;
+G:puts "Previous key:";
+G:puts count;
+notelet:set "count" notelet_key;
