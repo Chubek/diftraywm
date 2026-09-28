@@ -1,6 +1,8 @@
 #pragma once
 
 #include "command/CommandBar.hpp"
+#include "compositor/Output.hpp"
+#include <map>
 #include "command/CommandContext.hpp"
 #include "config/Config.hpp"
 #include "input/KeyboardHandler.hpp"
@@ -37,6 +39,7 @@ struct WlDisplayDeleter {
 };
 
 class Compositor {
+  friend struct CompositorTestAccess;
 public:
   Compositor();
   ~Compositor();
@@ -48,6 +51,10 @@ public:
   std::string spawn_cell(bool above);
   std::string kill_selected_cell();
   std::string move_selected_cell(int delta);
+  std::string move_cell(const std::string &id, const std::string &destination);
+  std::string move_cursor(const std::string &id, const std::string &kind, const std::string &destination);
+  std::string list_views() const;
+
   std::string toggle_cell_select_mode();
   std::string focus_active_cell();
   std::string promote_active_cell_to_tcursor();
@@ -65,6 +72,7 @@ public:
   std::string list_notelets() const;
   std::string open_notelet(const std::string &id);
   std::string close_notelet();
+  std::string refresh_notelet();
   std::string open_help_page(const std::string &topic);
   std::string find_help(const std::string &pattern);
   std::string set_help_bookmark(const std::string &name);
@@ -78,6 +86,12 @@ public:
   std::string switch_workspace(int number);
   int current_workspace() const { return current_workspace_; }
   void relayout();
+  void synchronize_outputs(const std::vector<OutputGeometry> &outputs);
+  std::string list_outputs() const;
+  std::string focus_output(const std::string &name);
+  std::string move_to_output(const std::string &name);
+  const std::string &current_output() const { return active_output_; }
+
 
   wl_display *display() const { return display_.get(); }
   CommandBar &command_bar() { return command_bar_; }
@@ -85,6 +99,13 @@ public:
   const std::string &status_line() const { return status_line_; }
 
 private:
+  void layout_current_output();
+  bool install_signals();
+  static int shutdown_signal(int signal, void *userdata);
+  static int child_signal(int signal, void *userdata);
+  wl_event_source *signal_sources_[3]{};
+  std::vector<int> launched_pids_;
+  Cell *pending_kill_ = nullptr;
   Cell *active_cell() const;
   NCursorView *ncursor_view() const;
   GCursorView *active_gcursor() const;
@@ -94,6 +115,9 @@ private:
   void detach_cell_surface(Cell *cell);
   void render_cell(Cell *cell, bool selected);
   void paint_notelet(Cell *cell);
+  void request_notelet(Cell *cell, const std::string &key, const std::string &event);
+  static int notelets_ready(void *userdata);
+  wl_event_source *notelet_timer_ = nullptr;
   void paint_help_pager();
   bool handle_help_pager_key(uint32_t keysym, uint32_t unicode);
   bool feed_help_search_key(uint32_t keysym, uint32_t unicode);
@@ -163,6 +187,11 @@ private:
   std::string wayland_socket_;
   diftray_wayland_runtime *wayland_runtime_ = nullptr;
   CompositorConfig config_;
+  std::map<std::string, Output> outputs_{{"default", Output{OutputGeometry{"default"}}}};
+  std::string active_output_ = "default";
+  std::string rendering_output_;
+  bool laying_out_ = false;
+  int output_x_ = 0, output_y_ = 0;
   int output_width_ = 1280;
   int output_height_ = 720;
   bool command_bar_open_ = false;
@@ -171,8 +200,8 @@ private:
   bool help_search_open_ = false;
   std::string help_search_input_;
   GCursorView *quick_restore_[4] = {nullptr, nullptr, nullptr, nullptr};
+  unsigned long next_ncursor_id_ = 1;
   int current_workspace_ = 1;
   int tcursor_workspace_ = 0;
-  NCursorView *workspace_ncursor_[kMaxWorkspace + 1] = {};
-  View *workspace_view_[kMaxWorkspace + 1] = {};
+
 };

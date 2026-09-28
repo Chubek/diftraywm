@@ -3,7 +3,9 @@
 notelets - small Termscript applications in DiftrayWM cells
 .SH DESCRIPTION
 Notelets are Termscript applications rendered in NCursor cells. The bundled
-hello Notelet is available in a normal build.
+hello, scratchpad and desktop Notelets are available in a normal build.
+Scripts run in bounded worker processes. The last successful frame and state
+survive errors; state is discarded when the cell is closed.
 .SH COMMANDS
 .TP
 :notelet list
@@ -11,6 +13,9 @@ List available Notelets.
 .TP
 :notelet open {name}
 Open a Notelet in the active NCursor.
+.TP
+:notelet refresh
+Refresh the focused Notelet with a new desktop snapshot.
 .TP
 :notelet close
 Close the focused Notelet cell.

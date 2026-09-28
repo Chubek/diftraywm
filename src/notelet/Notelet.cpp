@@ -55,7 +55,7 @@ Notelet::Notelet(std::string id, std::string source, std::string library,
                  std::map<std::string, std::string> assets)
     : id_(std::move(id)), source_(std::move(source)), library_(std::move(library)),
       assets_(std::move(assets)) {}
-Notelet::~Notelet() = default;
+Notelet::~Notelet() { stop_worker(); }
 
 TS_Status Notelet::key(TS_VM *, void *ctx, const TS_Value *a, size_t n,
                        TS_Value *ret, TS_Error *err) {
@@ -98,9 +98,57 @@ TS_Status Notelet::set(TS_VM *, void *ctx, const TS_Value *a, size_t n,
   return string_result(ret, a[1].as.string, err);
 }
 
-bool Notelet::render(std::string key_name, std::string &error) {
+TS_Status Notelet::context(TS_VM *, void *ctx, const TS_Value *a, size_t n,
+                           TS_Value *ret, TS_Error *err) {
+  if (auto st = argument(a, n, 1, err); st != TS_OK) return st;
+  const auto &items = static_cast<Notelet *>(ctx)->context_;
+  auto it = items.find(a[0].as.string);
+  return it == items.end() ? TS_OK : string_result(ret, it->second, err);
+}
+TS_Status Notelet::event(TS_VM *, void *ctx, const TS_Value *a, size_t n,
+                         TS_Value *ret, TS_Error *err) {
+  if (auto st = argument(a, n, 0, err); st != TS_OK) return st;
+  return string_result(ret, static_cast<Notelet *>(ctx)->event_, err);
+}
+TS_Status Notelet::erase(TS_VM *, void *ctx, const TS_Value *a, size_t n,
+                         TS_Value *ret, TS_Error *err) {
+  if (auto st = argument(a, n, 1, err); st != TS_OK) return st;
+  ts_value_make_bool(ret, static_cast<Notelet *>(ctx)->state_.erase(a[0].as.string) != 0);
+  return TS_OK;
+}
+TS_Status Notelet::edit(TS_VM *vm, void *ctx, const TS_Value *a, size_t n,
+                        TS_Value *ret, TS_Error *err) {
+  if (auto st = argument(a, n, 1, err); st != TS_OK) return st;
+  auto *app = static_cast<Notelet *>(ctx);
+  auto it = app->state_.find(a[0].as.string);
+  std::string text = it == app->state_.end() ? "" : it->second;
+  if (app->event_ == "key") {
+    if (app->key_ == "Backspace" && !text.empty()) {
+      size_t end = text.size() - 1;
+      while (end && (static_cast<unsigned char>(text[end]) & 0xc0) == 0x80) --end;
+      text.resize(end);
+    } else if (app->key_ == "Enter") text += '\n';
+    else if (app->key_ == "Tab") text += '\t';
+    else if (!app->key_.empty() &&
+             (app->key_.size() == 1 || static_cast<unsigned char>(app->key_[0]) >= 0x80))
+      text += app->key_;
+  }
+  TS_Value args[2]{};
+  if (ts_value_make_string(&args[0], a[0].as.string) != TS_OK ||
+      ts_value_make_string(&args[1], text.c_str()) != TS_OK) {
+    ts_value_free(&args[0]); ts_value_free(&args[1]);
+    return TS_ERR_NOMEM;
+  }
+  auto status = set(vm, ctx, args, 2, ret, err);
+  ts_value_free(&args[0]); ts_value_free(&args[1]);
+  return status;
+}
+
+bool Notelet::render(std::string key_name, std::string &error, std::string event_name) {
   error.clear();
   key_ = std::move(key_name);
+  event_ = std::move(event_name);
+  const auto previous_state = state_;
   DT_Error dt_error{};
   DT_TermVM *vm = dt_termscript_create(&dt_error);
   if (!vm) { error = dt_error.message; return false; }
@@ -108,7 +156,11 @@ bool Notelet::render(std::string key_name, std::string &error) {
                         {"name", &Notelet::name, this},
                         {"resource", &Notelet::resource, this},
                         {"get", &Notelet::get, this},
-                        {"set", &Notelet::set, this}, {nullptr, nullptr, nullptr}};
+                        {"set", &Notelet::set, this},
+                        {"context", &Notelet::context, this},
+                        {"event", &Notelet::event, this},
+                        {"edit", &Notelet::edit, this},
+                        {"erase", &Notelet::erase, this}, {nullptr, nullptr, nullptr}};
   TS_Module module{"diftray.notelet", funcs};
   TS_Error ts_error{};
   if (ts_vm_register_module(dt_termscript_inner_vm(vm), &module, &ts_error) != TS_OK) {
@@ -126,6 +178,7 @@ bool Notelet::render(std::string key_name, std::string &error) {
   }
   std::free(output);
   dt_termscript_free(vm);
+  if (status != DT_OK || !error.empty()) state_ = previous_state;
   return status == DT_OK && error.empty();
 }
 
@@ -196,7 +249,9 @@ bool NoteletCatalog::load(const std::filesystem::path &path, Bundle &out,
 }
 
 bool NoteletCatalog::discover(const std::string &paths, std::string &error) {
-  bundles_.clear(); names_.clear(); error.clear();
+  std::map<std::string, Bundle> bundles;
+  std::vector<std::string> names;
+  error.clear();
   std::istringstream dirs(paths);
   for (std::string dir; std::getline(dirs, dir, ':');) {
     if (dir.empty()) continue;
@@ -221,13 +276,15 @@ bool NoteletCatalog::discover(const std::string &paths, std::string &error) {
       if (path.extension() != ".notelet") continue;
       const auto id = path.stem().string();
       if (!id_ok(id)) { error = "invalid notelet name: " + id; return false; }
-      if (bundles_.count(id)) continue; // First path wins.
+      if (bundles.count(id)) continue; // First path wins.
       Bundle bundle;
       if (!load(path, bundle, error)) return false;
-      names_.push_back(id);
-      bundles_.emplace(id, std::move(bundle));
+      names.push_back(id);
+      bundles.emplace(id, std::move(bundle));
     }
   }
+  bundles_.swap(bundles);
+  names_.swap(names);
   return true;
 }
 

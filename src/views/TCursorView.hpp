@@ -11,6 +11,7 @@ public:
   explicit TCursorView(Cell *cell);
   ~TCursorView() override;
 
+  Cell *cell() const { return cell_; }
   void layout() override;
   void render(wlr_render_pass *pass) override;
   void focus() override;

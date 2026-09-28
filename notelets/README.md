@@ -6,9 +6,8 @@ authoring library), and optional text files under `assets/`. The archive is
 generated with the repository's packer:
 
 ```sh
-python3 domutils/diftray/scripts/bundle-notelet.py \
-  domutils/diftray/notelets/examples/hello /tmp/hello.notelet
-DIFTRAY_NOTELETS_PATH=/tmp ./domutils/diftray/build/diftray
+python3 scripts/bundle-notelet.py notelets/examples/hello /tmp/hello.notelet
+DIFTRAY_NOTELETS_PATH=/tmp ./build/diftray
 ```
 
 In Diftray, run `:notelet list`, `:notelet open hello`, then press keys in
@@ -27,12 +26,30 @@ is replaced. The authoring library binds `notelet` to the native module,
 | `notelet:resource "message.txt"` | Text in `assets/message.txt`, or `nil` |
 | `notelet:get "name"` | Persisted string, or `nil` |
 | `notelet:set "name" "value"` | Persist a string for later renders |
+| `notelet:erase "name"` | Remove a state entry; returns whether it existed |
+| `notelet:event` | `open`, `key`, `resize`, `refresh`, or `move` |
+| `notelet:context "columns"` / `"rows"` | Cell dimensions as strings |
+| `notelet:context "cell"` / `"workspace"` / `"output"` | Instance location |
+| `notelet:context "outputs"` / `"cursors"` | Desktop snapshots |
+| `notelet:edit "name"` | Edit a state string using the current key; supports Unicode, Enter, Tab, and Backspace |
 
 See [examples/hello/main.tsc](examples/hello/main.tsc) for a working program.
 Termscript's `G:load "std.*"` and `G:import` give Notelets access to
-DomTERM and the standard Termscript libraries. Scripts run on the compositor
-event loop, so avoid blocking standard library calls. The VM bounds execution
-steps, but blocking I/O in scripts can still stall the compositor.
+DomTERM and the standard Termscript libraries. The compositor queues input and
+runs each frame in a worker process, with a one-second wall-clock deadline and a
+CPU limit. A failed or timed-out render leaves the last successful frame and
+state intact. The input queue holds up to 64 waiting events. Workers and their
+process groups are cleaned up after each render or when the cell closes.
+
+Workers are an execution boundary, **not a security sandbox**. Install trusted
+Notelets: the standard library can access files and run commands as your user.
+Do not start long-lived processes from a frame; use the Command Bar's `launch`
+command for graphical applications. State persists for the lifetime of the
+Notelet cell, including workspace switches, output moves and hotplug. Closing
+the cell discards it. `:notelet refresh` requests a fresh context snapshot.
+
+The bundled `scratchpad` uses `notelet:edit` for transient notes, while `desktop`
+uses the context API as an inspector. `hello` demonstrates resources and state.
 
 Bundles are limited to 4 MiB, entries to 1 MiB, and rendered output to
 64 KiB. `notelet:set` allows 128 keys with values up to 4 KiB. Bundles may

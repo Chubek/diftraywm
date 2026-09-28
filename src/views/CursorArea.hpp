@@ -10,6 +10,7 @@ class CursorArea {
 public:
   void dock(GCursorView *view);
   void restore(GCursorView *view);
+  void forget(GCursorView *view);
   GCursorView *find_by_id(std::string_view id) const;
   GCursorView *find_by_slot(int slot) const;
   bool assign_slot(GCursorView *view, int slot);

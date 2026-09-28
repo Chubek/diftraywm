@@ -20,3 +20,22 @@ List live graphical cursor identifiers.
 .TP
 :help {page}
 Open a manual page.
+
+.TP
+:output list
+List logical monitor geometry and the focused output.
+.TP
+:output focus {name|next|prev}
+Focus a monitor. Meta+[ and Meta+] cycle monitors.
+.TP
+:output move {name}
+Move the active NCursor and its graphical clients to a monitor.
+.TP
+:ncursor list|new
+List NCursor and cell IDs, or create an NCursor on the focused monitor.
+.TP
+:cell move {cell-id} {ncursor-id}
+Move a cell, including Notelet state and owned graphical clients.
+.TP
+:cursor move {cursor-id} cell|ncursor {destination-id}
+Change a graphical cursor's ownership, preserving its docked state.

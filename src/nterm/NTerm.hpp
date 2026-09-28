@@ -13,17 +13,21 @@ struct tsm_vte;
 struct _vterm_s;
 
 class NTerm {
+  friend struct NTermTestAccess;
 public:
   explicit NTerm(std::string shell_override = {});
   ~NTerm();
 
   bool start();
   void stop();
+  void reap_child();
   bool running() const;
   const std::string &last_error() const;
   void on_readable();
   void resize(std::size_t columns, std::size_t rows);
   void feed_input(std::string_view bytes);
+  void flush_input();
+  bool input_pending() const { return !pending_input_.empty(); }
   // Render compositor-owned terminal content without writing to a PTY.
   void display(std::string_view bytes);
   bool handle_key(uint32_t keysym, uint32_t ascii, unsigned int mods,
@@ -53,6 +57,7 @@ private:
   std::size_t columns_ = 80;
   std::size_t rows_ = 24;
   std::string last_error_;
+  std::string pending_input_;
   bool running_ = false;
   bool dirty_ = true;
 };

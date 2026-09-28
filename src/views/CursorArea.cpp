@@ -15,7 +15,7 @@ void CursorArea::dock(GCursorView *view) {
   }
 }
 
-void CursorArea::restore(GCursorView *view) {
+void CursorArea::forget(GCursorView *view) {
   if (!view) {
     return;
   }
@@ -25,7 +25,11 @@ void CursorArea::restore(GCursorView *view) {
       slot = nullptr;
     }
   }
-  view->restore();
+}
+
+void CursorArea::restore(GCursorView *view) {
+  forget(view);
+  if (view) view->restore();
 }
 
 GCursorView *CursorArea::find_by_id(std::string_view id) const {

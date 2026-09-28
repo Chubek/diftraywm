@@ -95,6 +95,8 @@ public:
     if (tokens.size() < 2) {
       return "cell requires a subcommand";
     }
+    if (tokens.size() == 4 && tokens[1] == "move")
+      return context.compositor->move_cell(tokens[2], tokens[3]);
     if (tokens[1] == "select") {
       return context.compositor->toggle_cell_select_mode();
     }
@@ -131,6 +133,8 @@ public:
     if (tokens.size() < 2) {
       return "cursor requires a subcommand";
     }
+    if (tokens.size() == 5 && tokens[1] == "move")
+      return context.compositor->move_cursor(tokens[2], tokens[3], tokens[4]);
     if (tokens[1] == "dock" && tokens.size() >= 3) {
       return context.compositor->dock_cursor(tokens[2]);
     }
@@ -228,11 +232,13 @@ public:
     if (!context.compositor) return "notelets unavailable";
     if (tokens.size() == 2 && tokens[1] == "list")
       return context.compositor->list_notelets();
+    if (tokens.size() == 2 && tokens[1] == "refresh")
+      return context.compositor->refresh_notelet();
     if (tokens.size() == 2 && tokens[1] == "close")
       return context.compositor->close_notelet();
     if (tokens.size() == 3 && tokens[1] == "open")
       return context.compositor->open_notelet(tokens[2]);
-    return "notelet supports: list, open <name>, close";
+    return "notelet supports: list, open <name>, refresh, close";
   }
 };
 
@@ -307,7 +313,34 @@ public:
   }
 };
 
+class NCursorHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "ncursor"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "ncursors unavailable";
+    if (tokens.size() == 2 && tokens[1] == "list") return context.compositor->list_views();
+    if (tokens.size() == 2 && tokens[1] == "new") return context.compositor->spawn_ncursor();
+    return "ncursor supports: list, new";
+  }
+};
+
+class OutputHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "output"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "outputs unavailable";
+    if (tokens.size() == 2 && tokens[1] == "list") return context.compositor->list_outputs();
+    if (tokens.size() == 3 && tokens[1] == "focus") return context.compositor->focus_output(tokens[2]);
+    if (tokens.size() == 3 && tokens[1] == "move") return context.compositor->move_to_output(tokens[2]);
+    return "output supports: list, focus <name|next|prev>, move <name>";
+  }
+};
+
 void register_builtin_handlers(CommandBar &bar) {
+  bar.register_handler(std::make_unique<NCursorHandler>());
+  bar.register_handler(std::make_unique<OutputHandler>());
   bar.register_handler(std::make_unique<SpawnHandler>());
   bar.register_handler(std::make_unique<KillHandler>());
   bar.register_handler(std::make_unique<MoveHandler>());

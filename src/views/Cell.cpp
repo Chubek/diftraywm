@@ -46,7 +46,8 @@ void Cell::set_state(CellState state) { state_ = state; }
 NTerm *Cell::nterm() const { return nterm_.get(); }
 CursorArea &Cell::cursor_area() { return cursor_area_; }
 const CursorArea &Cell::cursor_area() const { return cursor_area_; }
-void Cell::set_shell_override(std::string shell_override) {
+void Cell::set_shell_override(std::string shell_override, bool individual) {
+  individual_shell_ = individual;
   shell_override_ = std::move(shell_override);
   if (nterm_) {
     nterm_->set_shell_path(shell_override_);

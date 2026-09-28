@@ -91,6 +91,11 @@ bool NTerm::spawn_shell() {
     return false;
   }
   if (pid == 0) {
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigprocmask(SIG_SETMASK, &mask, nullptr);
+    setenv("TERM", "xterm-256color", 1);
+    setenv("COLORTERM", "truecolor", 1);
     pty_handle(ptytty_handle_)->make_controlling_tty();
     if (slave >= 0) {
       ::dup2(slave, STDIN_FILENO);
@@ -103,6 +108,7 @@ bool NTerm::spawn_shell() {
     if (slave > STDERR_FILENO) {
       ::close(slave);
     }
+    close_range(3, ~0U, 0);
     const char *name = std::strrchr(shell_path_.c_str(), '/');
     name = name ? name + 1 : shell_path_.c_str();
     ::execl(shell_path_.c_str(), name, "-i", static_cast<char *>(nullptr));
@@ -137,12 +143,25 @@ void NTerm::stop() {
   if (child_pid_ > 0) {
     int status = 0;
     if (::waitpid(child_pid_, &status, WNOHANG) == 0) {
-      ::kill(child_pid_, SIGHUP);
-      ::waitpid(child_pid_, &status, 0);
+      const pid_t target = getsid(child_pid_) == child_pid_ ? -child_pid_ : child_pid_;
+      ::kill(target, SIGHUP);
+      // Never wait indefinitely for a shell that ignores hangup.
+      if (::waitpid(child_pid_, &status, WNOHANG) == 0) {
+        ::kill(target, SIGKILL);
+        while (::waitpid(child_pid_, &status, 0) < 0 && errno == EINTR) {}
+      }
     }
     child_pid_ = -1;
   }
+  pending_input_.clear();
   running_ = false;
+}
+
+void NTerm::reap_child() {
+  if (child_pid_ > 0 && ::waitpid(child_pid_, nullptr, WNOHANG) == child_pid_) {
+    child_pid_ = -1;
+    running_ = false;
+  }
 }
 
 bool NTerm::running() const { return running_; }
@@ -173,8 +192,7 @@ void NTerm::display(std::string_view bytes) {
   // every line would start indented by the width of the one before it.  Add
   // the carriage return here so callers can just use "\n".
   const std::size_t first_newline = bytes.find('\n');
-  if (first_newline == std::string_view::npos ||
-      (first_newline > 0 && bytes[first_newline - 1] == '\r')) {
+  if (first_newline == std::string_view::npos) {
     feed_parsers(bytes);
     return;
   }
@@ -233,23 +251,25 @@ void NTerm::resize(std::size_t columns, std::size_t rows) {
 }
 
 void NTerm::feed_input(std::string_view bytes) {
-  if (bytes.empty() || master_fd_ < 0) {
+  if (bytes.empty() || master_fd_ < 0) return;
+  if (bytes.size() > 1024 * 1024 - pending_input_.size()) {
+    last_error_ = "terminal input queue full";
     return;
   }
-  const char *data = bytes.data();
-  std::size_t remaining = bytes.size();
-  while (remaining > 0) {
-    const ssize_t count = ::write(master_fd_, data, remaining);
-    if (count > 0) {
-      data += count;
-      remaining -= static_cast<std::size_t>(count);
-      continue;
-    }
-    if (count < 0 && errno == EINTR) {
-      continue;
-    }
-    break;
+  pending_input_.append(bytes);
+  flush_input();
+}
+
+void NTerm::flush_input() {
+  size_t sent = 0;
+  while (sent < pending_input_.size() && master_fd_ >= 0) {
+    const ssize_t count = ::write(master_fd_, pending_input_.data() + sent,
+                                   pending_input_.size() - sent);
+    if (count > 0) sent += static_cast<size_t>(count);
+    else if (count < 0 && errno == EINTR) continue;
+    else break;
   }
+  pending_input_.erase(0, sent);
 }
 
 bool NTerm::handle_key(uint32_t keysym, uint32_t ascii, unsigned int mods,
@@ -298,15 +318,14 @@ bool NTerm::owns_pid(pid_t pid) const {
     if (!file) {
       return false;
     }
-    int id = 0;
-    char comm[256];
+    char record[4096];
+    const bool read = std::fgets(record, sizeof(record), file) != nullptr;
+    std::fclose(file);
     char state = 0;
     int ppid = 0;
-    const int matched = std::fscanf(file, "%d %255s %c %d", &id, comm, &state, &ppid);
-    std::fclose(file);
-    if (matched != 4 || ppid <= 0) {
+    const char *end = read ? std::strrchr(record, ')') : nullptr;
+    if (!end || std::sscanf(end + 1, " %c %d", &state, &ppid) != 2 || ppid <= 0)
       return false;
-    }
     current = ppid;
   }
   return false;

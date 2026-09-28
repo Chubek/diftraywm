@@ -1,21 +1,7 @@
 # DiftrayWM -- top-level build.
 #
-# Dependency policy
-# -----------------
-# Vendored *sources* that this build compiles itself:
-#   libtsm, libvterm, libptytty, domterm (Termscript + stdlib), PEGTL.
-#
-# wlroots is vendored but is a meson project, so scripts/build-wlroots.sh
-# builds it out of tree and the result is consumed as an imported library.
-#
-# Everything else -- wayland, libinput, libxkbcommon, pixman, libdrm, freetype,
-# harfbuzz, fontconfig, ncursesw -- is discovered with pkg-config and linked
-# from the system.  The copies under third_party/ are not part of this build,
-# so their headers have to stay off the include path: the vendored copies lag
-# the installed libraries (libxkbcommon 1.14.0-beta1 vs 1.13.2, freetype 2.14.3
-# vs 26.6.20, harfbuzz 14.2.1 vs 14.4.0) and shadowing the real headers makes
-# wlr/types/wlr_keyboard.h and the NTerm renderer compile against declarations
-# the linked shared object does not implement.
+# Vendored libraries are built into a private prefix before pkg-config
+# discovery. Only platform dependencies absent from third_party use the host.
 
 cmake_minimum_required(VERSION 3.16)
 
@@ -93,16 +79,6 @@ if(NOT EXISTS "${DIFTRAY_AUROCKS}")
 endif()
 
 # ---------------------------------------------------------------------------
-# System libraries
-# ---------------------------------------------------------------------------
-pkg_check_modules(WLROOTS_BUILD_DEPS REQUIRED IMPORTED_TARGET
-  pixman-1 libdrm wayland-server xkbcommon libinput)
-pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
-pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
-pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
-pkg_check_modules(NCURSESW REQUIRED IMPORTED_TARGET ncursesw)
-
-# ---------------------------------------------------------------------------
 # wlroots (meson, out of tree)
 # ---------------------------------------------------------------------------
 set(WLROOTS_SOURCE_DIR "${DIFTRAY_THIRD_PARTY}/wlroots")
@@ -143,6 +119,40 @@ if(NOT MESON_EXECUTABLE OR NOT NINJA_EXECUTABLE)
 endif()
 unset(_diftraywm_toolchain_hints)
 
+set(DIFTRAY_VENDOR_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/vendor")
+message(STATUS "Building vendored dependency chain (log: ${CMAKE_CURRENT_BINARY_DIR}/vendor-build.log)")
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "MESON_BIN=${MESON_EXECUTABLE}"
+    "${DIFTRAYWM_ROOT}/scripts/build-vendored.sh" "${CMAKE_CURRENT_BINARY_DIR}"
+  OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/vendor-build.log"
+  ERROR_FILE "${CMAKE_CURRENT_BINARY_DIR}/vendor-build.log"
+  RESULT_VARIABLE _vendor_result)
+if(NOT _vendor_result EQUAL 0)
+  message(FATAL_ERROR "Vendored dependency build failed. See ${CMAKE_CURRENT_BINARY_DIR}/vendor-build.log; required host tools include Meson, Ninja, Autotools, gettext and gperf.")
+endif()
+set(ENV{PKG_CONFIG_PATH} "${DIFTRAY_VENDOR_PREFIX}/lib/pkgconfig:${DIFTRAY_VENDOR_PREFIX}/share/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+# Discard cached system paths when upgrading an existing build directory.
+get_cmake_property(_cache_vars CACHE_VARIABLES)
+foreach(_var IN LISTS _cache_vars)
+  if(_var MATCHES "^(__pkg_config_checked_|pkgcfg_lib_)(WLROOTS_BUILD_DEPS|FREETYPE|HARFBUZZ|FONTCONFIG)")
+    unset(${_var} CACHE)
+  endif()
+endforeach()
+set(CMAKE_BUILD_RPATH "${DIFTRAY_VENDOR_PREFIX}/lib;${WLROOTS_BUILD_DIR}")
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}/diftraywm")
+
+# ---------------------------------------------------------------------------
+# Library discovery (private vendored prefix first)
+# ---------------------------------------------------------------------------
+pkg_check_modules(WLROOTS_BUILD_DEPS REQUIRED IMPORTED_TARGET
+  pixman-1 libdrm wayland-server xkbcommon libinput)
+pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+pkg_check_modules(NCURSESW REQUIRED IMPORTED_TARGET ncursesw)
+
+
+
 set(WLROOTS_LIBRARY "${WLROOTS_BUILD_DIR}/libwlroots-${WLROOTS_ABI_VERSION}.so")
 
 # This is a custom target rather than an OUTPUT-driven custom command on
@@ -152,6 +162,8 @@ set(WLROOTS_LIBRARY "${WLROOTS_BUILD_DIR}/libwlroots-${WLROOTS_ABI_VERSION}.so")
 add_custom_target(wlroots_ep
   COMMAND "${CMAKE_COMMAND}" -E env
           "MESON_BIN=${MESON_EXECUTABLE}"
+          "PKG_CONFIG_PATH=$ENV{PKG_CONFIG_PATH}"
+          "LD_LIBRARY_PATH=${DIFTRAY_VENDOR_PREFIX}/lib"
           "NINJA_BIN=${NINJA_EXECUTABLE}"
           "WLROOTS_SRC=${WLROOTS_SOURCE_DIR}"
           "WLROOTS_BUILD=${WLROOTS_BUILD_DIR}"
@@ -321,27 +333,28 @@ set(DIFTRAY_BUNDLED_NOTELETS_DIR "${CMAKE_CURRENT_BINARY_DIR}/notelets")
 set(DIFTRAY_NOTELET_DEFAULT_PATH
   "${DIFTRAY_BUNDLED_NOTELETS_DIR}:${CMAKE_INSTALL_FULL_DATADIR}/diftraywm/notelets")
 
-add_custom_command(
-  OUTPUT "${DIFTRAY_BUNDLED_NOTELETS_DIR}/hello.notelet"
-  COMMAND "${CMAKE_COMMAND}" -E make_directory
-          "${DIFTRAY_BUNDLED_NOTELETS_DIR}"
-  COMMAND "${Python3_EXECUTABLE}" "${DIFTRAYWM_ROOT}/scripts/bundle-notelet.py"
-          "${DIFTRAYWM_ROOT}/notelets/examples/hello"
-          "${DIFTRAY_BUNDLED_NOTELETS_DIR}/hello.notelet"
-  DEPENDS "${DIFTRAYWM_ROOT}/scripts/bundle-notelet.py"
-          "${DIFTRAYWM_ROOT}/notelets/notelet.tsc"
-          "${DIFTRAYWM_ROOT}/notelets/examples/hello/main.tsc"
-          "${DIFTRAYWM_ROOT}/notelets/examples/hello/assets/message.txt"
-  COMMENT "Bundling notelets"
-  VERBATIM)
-add_custom_target(diftraywm_bundled_notelets ALL
-  DEPENDS "${DIFTRAY_BUNDLED_NOTELETS_DIR}/hello.notelet")
+set(DIFTRAY_BUNDLED_NOTELETS "")
+foreach(_notelet hello scratchpad desktop)
+  file(GLOB_RECURSE _notelet_sources CONFIGURE_DEPENDS
+    "${DIFTRAYWM_ROOT}/notelets/examples/${_notelet}/*")
+  set(_bundle "${DIFTRAY_BUNDLED_NOTELETS_DIR}/${_notelet}.notelet")
+  add_custom_command(OUTPUT "${_bundle}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${DIFTRAY_BUNDLED_NOTELETS_DIR}"
+    COMMAND "${Python3_EXECUTABLE}" "${DIFTRAYWM_ROOT}/scripts/bundle-notelet.py"
+      "${DIFTRAYWM_ROOT}/notelets/examples/${_notelet}" "${_bundle}"
+    DEPENDS "${DIFTRAYWM_ROOT}/scripts/bundle-notelet.py"
+      "${DIFTRAYWM_ROOT}/notelets/notelet.tsc" ${_notelet_sources}
+    VERBATIM)
+  list(APPEND DIFTRAY_BUNDLED_NOTELETS "${_bundle}")
+endforeach()
+add_custom_target(diftraywm_bundled_notelets ALL DEPENDS ${DIFTRAY_BUNDLED_NOTELETS})
 
 # ---------------------------------------------------------------------------
 # DiftrayWM libraries
 # ---------------------------------------------------------------------------
 add_library(diftraywm_notelet STATIC
   src/notelet/Notelet.cpp
+  src/notelet/NoteletWorker.cpp
 )
 diftraywm_target_defaults(diftraywm_notelet)
 target_link_libraries(diftraywm_notelet PUBLIC termscript)
@@ -476,7 +489,13 @@ add_dependencies(diftray diftraywm_bundled_notelets)
 # Install
 # ---------------------------------------------------------------------------
 install(TARGETS diftray diftraywm RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(FILES "${DIFTRAY_BUNDLED_NOTELETS_DIR}/hello.notelet"
+install(FILES "${WLROOTS_LIBRARY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/diftraywm")
+install(DIRECTORY "${DIFTRAY_VENDOR_PREFIX}/lib/"
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/diftraywm"
+  FILES_MATCHING PATTERN "*.so*"
+  PATTERN "pkgconfig" EXCLUDE)
+
+install(FILES ${DIFTRAY_BUNDLED_NOTELETS}
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm/notelets")
 install(FILES diftray.conf
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")

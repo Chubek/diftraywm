@@ -9,7 +9,8 @@ typed views rather than freely floating windows:
 
 ## Build
 
-From this directory:
+The build compiles the vendored dependency chain into `build/vendor`; see
+[INSTALL.md](INSTALL.md) for host build tools. From this directory:
 
 ```sh
 cmake -S . -B build
@@ -49,7 +50,7 @@ WLR_RENDERER=pixman \
 - `Meta+Escape` quit
 - `Meta+Tab` cell select mode
 - `Meta+Up` / `Meta+Down` reorder cells
-- `Meta+K` kill selected cell
+- `Meta+K` request cell removal; `y`/`Enter` confirms, `n`/`Escape` cancels
 - `:` cell command bar (`spawn above`, `spawn below`, `kill`, …)
 - `Meta+:` NCursor-global command bar
 - `Meta+D` launcher
@@ -59,6 +60,7 @@ WLR_RENDERER=pixman \
 - `Meta+Left` / `Meta+Right` cycle NCursor or GCursor tabs
 - `Meta+1`–`Meta+9` switch workspace
 - `Meta+0` workspace 10
+- `Meta+[` / `Meta+]` focus the previous / next monitor
 - `:help` / `:h` opens the built-in Unix-manpage-style Help Pager
 
 Graphical clients launched from a cell or the launcher are promoted to a
@@ -66,6 +68,30 @@ GCursor. The default `gcursor_mode = tab` shows one at a time;
 `gcursor_mode = stack` splits the output into equal width columns. Click a
 stacked window to give it keyboard focus. Minimising docks it into its
 launching cell's Cursor Area.
+
+## Multiple monitors
+
+Every connected output gets its own NCursor. Tabs, terminal geometry, graphical
+views, and remembered focus are per monitor. Workspace switching is global and
+creates a terminal on each output the first time that workspace is visited.
+Hot-unplug migrates views to a surviving monitor; reconnecting after all outputs
+were removed restores the desktop. Logical output coordinates account for scale
+and transform.
+
+```
+output list
+output focus next
+output focus HDMI-A-1
+output move DP-1
+ncursor list
+cell move <cell-id> <ncursor-id>
+cursor move <cursor-id> cell <cell-id>
+cursor move <cursor-id> ncursor <ncursor-id>
+```
+
+`output move` moves the active NCursor and its owned GCursors. The source monitor
+gets a replacement NCursor if needed. The command/status bar follows keyboard
+focus. `ncursor list` lists cell IDs as well as monitor/workspace ownership.
 
 ## Appearance
 
@@ -81,8 +107,11 @@ are not currently rendered by the compositor.
 ## Notelets
 
 Notelets are small Termscript applications displayed in NCursor cells. Use
-`:notelet list`, `:notelet open hello`, and `:notelet close`. The bundled
-`hello` example is built into `build/notelets/hello.notelet`. Set
+`:notelet list`, `:notelet open hello`, `:notelet refresh`, and `:notelet close`. The bundled
+`hello` example is built into `build/notelets/hello.notelet`. Also included are
+`scratchpad`, a Unicode text notebook, and `desktop`, a monitor/workspace/cursor
+inspector. Notelet scripts run in asynchronous worker processes with a one-second
+execution deadline; failures retain the previous successful frame and state. Set
 `DIFTRAY_NOTELETS_PATH` to colon-separated directories and/or `.notelet`
 archives to replace the default search path (user data directory followed by
 the built-in bundles). Earlier directories take precedence for duplicate
@@ -99,3 +128,11 @@ page with Oniguruma regular expressions. While reading, `/` opens an in-page
 search, `n` and `?` move between results, and `q` or `Escape` closes the pager.
 `help_key_*` entries in `diftray.conf` rebind these keys; `help_path` can point
 at colon-separated directories of additional `page.1` manual pages.
+
+## Implementation status
+
+The compositor runs with multiple headless outputs and the repository test suite
+covers navigation, ownership migration, Notelet workers, terminal display and
+input backpressure. See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the remaining
+specification gaps and dependency constraints. This is not yet a complete
+implementation of every contract in AGENTS.md.

@@ -115,6 +115,13 @@ main() {
     }
   }
 
+  {
+    const Grid grid = paint(term, "AAA\r\nBBB\nCCC\r\n", 6);
+    if (row_text(grid, 0) != "AAA" || row_text(grid, 1) != "BBB" || row_text(grid, 2) != "CCC") {
+      std::cerr << "mixed line endings misplaced\n"; return EXIT_FAILURE;
+    }
+  }
+
   // 3. A leading newline must not be mistaken for an already-terminated one.
   {
     const Grid grid = paint(term, "\nBBB", 6);

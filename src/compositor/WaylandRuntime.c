@@ -68,6 +68,8 @@ struct diftray_wayland_runtime {
   struct wl_list outputs;
   struct wl_list keyboards;
   struct wl_list toplevels;
+  diftray_text_renderer text_renderer;
+  void *text_userdata;
   diftray_wayland_key_handler key_handler;
   void *key_handler_userdata;
   diftray_wayland_toplevel_handler toplevel_handler;
@@ -82,6 +84,7 @@ struct diftray_wayland_runtime {
   char *command_bar_text_copy;
   char *status_line;
   struct diftray_wayland_style style;
+  int output_x, output_y;
   int output_width;
   int output_height;
 };
@@ -142,117 +145,6 @@ struct diftray_cell_surface {
   int height;
 };
 
-/*
- * Compact 5x7 glyphs are used only for compositor chrome (command bar /
- * status). NTerm cells are rendered by the FreeType/HarfBuzz pipeline.
- */
-static const uint8_t chrome_glyphs[128][7] = {
-    [' '] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-    ['!'] = {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04},
-    ['#'] = {0x0a, 0x1f, 0x0a, 0x0a, 0x1f, 0x0a, 0x00},
-    ['$'] = {0x04, 0x0f, 0x14, 0x0e, 0x05, 0x1e, 0x04},
-    ['%'] = {0x19, 0x19, 0x02, 0x04, 0x08, 0x13, 0x13},
-    ['&'] = {0x0c, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0d},
-    ['('] = {0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02},
-    [')'] = {0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08},
-    ['*'] = {0x00, 0x04, 0x15, 0x0e, 0x15, 0x04, 0x00},
-    ['+'] = {0x00, 0x04, 0x04, 0x1f, 0x04, 0x04, 0x00},
-    [','] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x04},
-    ['-'] = {0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00},
-    ['.'] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06},
-    ['/'] = {0x01, 0x02, 0x02, 0x04, 0x08, 0x08, 0x10},
-    ['0'] = {0x0e, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0e},
-    ['1'] = {0x04, 0x0c, 0x04, 0x04, 0x04, 0x04, 0x0e},
-    ['2'] = {0x0e, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1f},
-    ['3'] = {0x1e, 0x01, 0x01, 0x0e, 0x01, 0x01, 0x1e},
-    ['4'] = {0x02, 0x06, 0x0a, 0x12, 0x1f, 0x02, 0x02},
-    ['5'] = {0x1f, 0x10, 0x10, 0x1e, 0x01, 0x01, 0x1e},
-    ['6'] = {0x06, 0x08, 0x10, 0x1e, 0x11, 0x11, 0x0e},
-    ['7'] = {0x1f, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},
-    ['8'] = {0x0e, 0x11, 0x11, 0x0e, 0x11, 0x11, 0x0e},
-    ['9'] = {0x0e, 0x11, 0x11, 0x0f, 0x01, 0x02, 0x0c},
-    [':'] = {0x00, 0x06, 0x06, 0x00, 0x06, 0x06, 0x00},
-    [';'] = {0x00, 0x06, 0x06, 0x00, 0x06, 0x04, 0x08},
-    ['<'] = {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02},
-    ['='] = {0x00, 0x1f, 0x00, 0x1f, 0x00, 0x00, 0x00},
-    ['>'] = {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08},
-    ['?'] = {0x0e, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04},
-    ['A'] = {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
-    ['B'] = {0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e},
-    ['C'] = {0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e},
-    ['D'] = {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e},
-    ['E'] = {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f},
-    ['F'] = {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10},
-    ['G'] = {0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f},
-    ['H'] = {0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11},
-    ['I'] = {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e},
-    ['J'] = {0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0e},
-    ['K'] = {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11},
-    ['L'] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f},
-    ['M'] = {0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11},
-    ['N'] = {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11},
-    ['O'] = {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e},
-    ['P'] = {0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10},
-    ['Q'] = {0x0e, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0d},
-    ['R'] = {0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11},
-    ['S'] = {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e},
-    ['T'] = {0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
-    ['U'] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e},
-    ['V'] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04},
-    ['W'] = {0x11, 0x11, 0x11, 0x15, 0x15, 0x1b, 0x11},
-    ['X'] = {0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11},
-    ['Y'] = {0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04},
-    ['Z'] = {0x1f, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1f},
-    ['_'] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1f},
-    ['['] = {0x0e, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0e},
-    [']'] = {0x0e, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0e},
-    ['a'] = {0x00, 0x00, 0x0e, 0x01, 0x0f, 0x11, 0x0f},
-    ['b'] = {0x10, 0x10, 0x1e, 0x11, 0x11, 0x11, 0x1e},
-    ['c'] = {0x00, 0x00, 0x0e, 0x10, 0x10, 0x11, 0x0e},
-    ['d'] = {0x01, 0x01, 0x0f, 0x11, 0x11, 0x11, 0x0f},
-    ['e'] = {0x00, 0x00, 0x0e, 0x11, 0x1f, 0x10, 0x0e},
-    ['f'] = {0x06, 0x08, 0x1e, 0x08, 0x08, 0x08, 0x08},
-    ['g'] = {0x00, 0x00, 0x0f, 0x11, 0x0f, 0x01, 0x0e},
-    ['h'] = {0x10, 0x10, 0x1e, 0x11, 0x11, 0x11, 0x11},
-    ['i'] = {0x04, 0x00, 0x0c, 0x04, 0x04, 0x04, 0x0e},
-    ['j'] = {0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0c},
-    ['k'] = {0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12},
-    ['l'] = {0x0c, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e},
-    ['m'] = {0x00, 0x00, 0x1a, 0x15, 0x15, 0x15, 0x15},
-    ['n'] = {0x00, 0x00, 0x1e, 0x11, 0x11, 0x11, 0x11},
-    ['o'] = {0x00, 0x00, 0x0e, 0x11, 0x11, 0x11, 0x0e},
-    ['p'] = {0x00, 0x00, 0x1e, 0x11, 0x1e, 0x10, 0x10},
-    ['q'] = {0x00, 0x00, 0x0f, 0x11, 0x0f, 0x01, 0x01},
-    ['r'] = {0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10},
-    ['s'] = {0x00, 0x00, 0x0f, 0x10, 0x0e, 0x01, 0x1e},
-    ['t'] = {0x08, 0x08, 0x1e, 0x08, 0x08, 0x08, 0x06},
-    ['u'] = {0x00, 0x00, 0x11, 0x11, 0x11, 0x11, 0x0f},
-    ['v'] = {0x00, 0x00, 0x11, 0x11, 0x11, 0x0a, 0x04},
-    ['w'] = {0x00, 0x00, 0x11, 0x15, 0x15, 0x15, 0x0a},
-    ['x'] = {0x00, 0x00, 0x11, 0x0a, 0x04, 0x0a, 0x11},
-    ['y'] = {0x00, 0x00, 0x11, 0x11, 0x0f, 0x01, 0x0e},
-    ['z'] = {0x00, 0x00, 0x1f, 0x02, 0x04, 0x08, 0x1f},
-};
-
-static uint8_t channel_from_float(float value) {
-  if (value < 0.0f) {
-    return 0;
-  }
-  if (value > 1.0f) {
-    return 255;
-  }
-  return (uint8_t)(value * 255.0f + 0.5f);
-}
-
-static uint32_t pack_color(const float color[4]) {
-  const uint8_t alpha = channel_from_float(color[3]);
-  const uint8_t red = (uint8_t)((uint16_t)channel_from_float(color[0]) * alpha / 255);
-  const uint8_t green = (uint8_t)((uint16_t)channel_from_float(color[1]) * alpha / 255);
-  const uint8_t blue = (uint8_t)((uint16_t)channel_from_float(color[2]) * alpha / 255);
-  return ((uint32_t)alpha << 24) | ((uint32_t)red << 16) |
-         ((uint32_t)green << 8) | blue;
-}
-
 static void pixel_buffer_destroy(struct wlr_buffer *wlr_buffer) {
   struct diftray_pixel_buffer *buffer =
       wl_container_of(wlr_buffer, buffer, base);
@@ -302,66 +194,12 @@ static struct diftray_pixel_buffer *pixel_buffer_create(int width, int height) {
   return buffer;
 }
 
-static void draw_chrome_pixel(struct diftray_pixel_buffer *buffer, int x, int y,
-                              uint32_t color) {
-  if (!buffer || x < 0 || y < 0 || x >= buffer->base.width ||
-      y >= buffer->base.height) {
-    return;
-  }
-  buffer->pixels[(size_t)y * (buffer->stride / sizeof(uint32_t)) + (size_t)x] =
-      color;
-}
-
-static void draw_chrome_glyph(struct diftray_pixel_buffer *buffer,
-                              unsigned char character, int x, int y, int scale,
-                              uint32_t color) {
-  if (character >= 128) {
-    character = '?';
-  }
-  const uint8_t *rows = chrome_glyphs[character];
-  for (int row = 0; row < 7; ++row) {
-    for (int column = 0; column < 5; ++column) {
-      if ((rows[row] & (1u << (4 - column))) == 0) {
-        continue;
-      }
-      for (int dy = 0; dy < scale; ++dy) {
-        for (int dx = 0; dx < scale; ++dx) {
-          draw_chrome_pixel(buffer, x + column * scale + dx,
-                            y + row * scale + dy, color);
-        }
-      }
-    }
-  }
-}
-
-static void render_chrome_text(struct diftray_pixel_buffer *buffer,
-                               const char *text, const float bg[4],
-                               const float fg[4]) {
-  if (!buffer) {
-    return;
-  }
-  const uint32_t background = pack_color(bg);
-  const uint32_t foreground = pack_color(fg);
-  const size_t count =
-      (size_t)buffer->base.width * (size_t)buffer->base.height;
-  for (size_t index = 0; index < count; ++index) {
-    buffer->pixels[index] = background;
-  }
-  if (!text) {
-    text = "";
-  }
-  const int scale = 2;
-  const int advance = 6 * scale;
-  int x = 8;
-  const int y = (buffer->base.height - 7 * scale) / 2;
-  for (const unsigned char *cursor = (const unsigned char *)text; *cursor;
-       ++cursor) {
-    if (x + 5 * scale >= buffer->base.width - 8) {
-      break;
-    }
-    draw_chrome_glyph(buffer, *cursor, x, y < 0 ? 2 : y, scale, foreground);
-    x += advance;
-  }
+static void render_chrome_text(struct diftray_wayland_runtime *runtime,
+    struct diftray_pixel_buffer *buffer, const char *text,
+    const float bg[4], const float fg[4]) {
+  if (buffer && runtime->text_renderer)
+    runtime->text_renderer(runtime->text_userdata, text, buffer->pixels,
+        buffer->base.width, buffer->base.height, bg, fg);
 }
 
 static struct diftray_toplevel *toplevel_from_xdg(
@@ -422,9 +260,7 @@ static void output_request_state(struct wl_listener *listener, void *data) {
   struct diftray_output *output =
       wl_container_of(listener, output, request_state);
   const struct wlr_output_event_request_state *event = data;
-  wlr_output_commit_state(output->output, event->state);
-  output->runtime->output_width = output->output->width;
-  output->runtime->output_height = output->output->height;
+  if (!wlr_output_commit_state(output->output, event->state)) return;
   layout_overlay(output->runtime);
   notify_output_geometry(output->runtime);
 }
@@ -443,16 +279,19 @@ static void layout_overlay(struct diftray_wayland_runtime *runtime) {
   const int bar_height = runtime->style.command_bar_height;
   const int width = runtime->output_width > 0 ? runtime->output_width : 1920;
   const int height = runtime->output_height > 0 ? runtime->output_height : 1080;
-  wlr_scene_rect_set_size(runtime->background, width, height);
+  struct wlr_box bounds;
+  wlr_output_layout_get_box(runtime->output_layout, NULL, &bounds);
+  wlr_scene_rect_set_size(runtime->background, bounds.width, bounds.height);
+  wlr_scene_node_set_position(&runtime->background->node, bounds.x, bounds.y);
   wlr_scene_rect_set_size(runtime->command_bar, width, bar_height);
-  wlr_scene_node_set_position(&runtime->command_bar->node, 0,
-                              height - bar_height);
+  wlr_scene_node_set_position(&runtime->command_bar->node, runtime->output_x,
+                              runtime->output_y + height - bar_height);
   if (runtime->command_bar_text) {
-    wlr_scene_node_set_position(&runtime->command_bar_text->node, 0,
-                                height - bar_height);
+    wlr_scene_node_set_position(&runtime->command_bar_text->node, runtime->output_x,
+                                runtime->output_y + height - bar_height);
   }
   if (runtime->status_text) {
-    wlr_scene_node_set_position(&runtime->status_text->node, 0, 0);
+    wlr_scene_node_set_position(&runtime->status_text->node, runtime->output_x, runtime->output_y);
   }
 }
 
@@ -463,7 +302,10 @@ static void output_destroy(struct wl_listener *listener, void *data) {
   wl_list_remove(&output->request_state.link);
   wl_list_remove(&output->destroy.link);
   wl_list_remove(&output->link);
+  struct diftray_wayland_runtime *runtime = output->runtime;
+  wlr_output_layout_remove(runtime->output_layout, output->output);
   free(output);
+  notify_output_geometry(runtime);
 }
 
 static void new_output(struct wl_listener *listener, void *data) {
@@ -482,10 +324,12 @@ static void new_output(struct wl_listener *listener, void *data) {
   if (mode) {
     wlr_output_state_set_mode(&state, mode);
   }
-  wlr_output_commit_state(wlr_output, &state);
+  bool committed = wlr_output_commit_state(wlr_output, &state);
   wlr_output_state_finish(&state);
+  if (!committed) return;
 
   struct diftray_output *output = calloc(1, sizeof(*output));
+  if (!output) return;
   output->runtime = runtime;
   output->output = wlr_output;
   output->frame.notify = output_frame;
@@ -502,8 +346,7 @@ static void new_output(struct wl_listener *listener, void *data) {
   wlr_scene_output_layout_add_output(runtime->scene_layout, layout_output,
                                      output->scene_output);
 
-  runtime->output_width = wlr_output->width;
-  runtime->output_height = wlr_output->height;
+  wlr_output_effective_resolution(wlr_output, &runtime->output_width, &runtime->output_height);
   wlr_cursor_set_xcursor(runtime->cursor, runtime->cursor_mgr, "default");
   layout_overlay(runtime);
   notify_output_geometry(runtime);
@@ -912,7 +755,7 @@ static void refresh_command_bar(struct diftray_wayland_runtime *runtime) {
   if (!runtime->command_bar_buffer || !runtime->command_bar_text) {
     return;
   }
-  render_chrome_text(runtime->command_bar_buffer,
+  render_chrome_text(runtime, runtime->command_bar_buffer,
                      runtime->command_bar_text_copy,
                      runtime->style.command_bar_color,
                      runtime->style.border_color);
@@ -943,7 +786,7 @@ static void refresh_status_line(struct diftray_wayland_runtime *runtime) {
   float bg[4] = {runtime->style.background_color[0],
                  runtime->style.background_color[1],
                  runtime->style.background_color[2], 0.85f};
-  render_chrome_text(runtime->status_buffer, runtime->status_line, bg,
+  render_chrome_text(runtime, runtime->status_buffer, runtime->status_line, bg,
                      runtime->style.border_color);
   wlr_scene_buffer_set_buffer(runtime->status_text,
                               &runtime->status_buffer->base);
@@ -953,6 +796,7 @@ static void refresh_status_line(struct diftray_wayland_runtime *runtime) {
 struct diftray_wayland_runtime *diftray_wayland_runtime_create(
     struct wl_display *display, const struct diftray_wayland_style *style) {
   struct diftray_wayland_runtime *runtime = calloc(1, sizeof(*runtime));
+  if (!runtime) return NULL;
   runtime->display = display;
   runtime->style = *style;
   if (runtime->style.highlight_color[3] <= 0.0f) {
@@ -1039,6 +883,13 @@ bool diftray_wayland_runtime_start(struct diftray_wayland_runtime *runtime) {
   return runtime && wlr_backend_start(runtime->backend);
 }
 
+void diftray_wayland_runtime_set_text_renderer(struct diftray_wayland_runtime *runtime,
+    diftray_text_renderer renderer, void *userdata) {
+  if (!runtime) return;
+  runtime->text_renderer = renderer;
+  runtime->text_userdata = userdata;
+}
+
 void diftray_wayland_runtime_set_key_handler(
     struct diftray_wayland_runtime *runtime,
     diftray_wayland_key_handler handler, void *userdata) {
@@ -1080,6 +931,30 @@ void diftray_wayland_runtime_set_output_handler(
   if (runtime->output_width > 0 && runtime->output_height > 0) {
     handler(userdata, runtime->output_width, runtime->output_height);
   }
+}
+
+bool diftray_wayland_runtime_output_at(struct diftray_wayland_runtime *runtime,
+    size_t index, struct diftray_output_geometry *geometry) {
+  if (!runtime || !geometry) return false;
+  struct diftray_output *output;
+  wl_list_for_each(output, &runtime->outputs, link) {
+    if (!output->output->enabled) continue;
+    if (index-- != 0) continue;
+    struct wlr_box box;
+    wlr_output_layout_get_box(runtime->output_layout, output->output, &box);
+    *geometry = (struct diftray_output_geometry){output->output->name,
+        box.x, box.y, box.width, box.height};
+    return true;
+  }
+  return false;
+}
+
+void diftray_wayland_runtime_set_chrome_box(struct diftray_wayland_runtime *runtime,
+    int x, int y, int width, int height) {
+  if (!runtime) return;
+  runtime->output_x = x; runtime->output_y = y;
+  runtime->output_width = width; runtime->output_height = height;
+  layout_overlay(runtime);
 }
 
 bool diftray_wayland_runtime_output_size(struct diftray_wayland_runtime *runtime,
@@ -1289,10 +1164,33 @@ void diftray_wayland_runtime_set_status_line(
   refresh_status_line(runtime);
 }
 
+static void disconnect_listener(struct wl_listener *listener) {
+  if (listener->link.next) {
+    wl_list_remove(&listener->link);
+    wl_list_init(&listener->link);
+  }
+}
+
 void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime) {
   if (!runtime) {
     return;
   }
+  runtime->output_handler = NULL;
+  runtime->toplevel_destroy_handler = NULL;
+  runtime->toplevel_request_handler = NULL;
+  runtime->focus_handler = NULL;
+  disconnect_listener(&runtime->new_output);
+  disconnect_listener(&runtime->new_input);
+  disconnect_listener(&runtime->new_toplevel);
+  disconnect_listener(&runtime->new_popup);
+  disconnect_listener(&runtime->request_cursor);
+  disconnect_listener(&runtime->request_set_selection);
+  disconnect_listener(&runtime->cursor_motion);
+  disconnect_listener(&runtime->cursor_motion_absolute);
+  disconnect_listener(&runtime->cursor_button);
+  disconnect_listener(&runtime->cursor_axis);
+  disconnect_listener(&runtime->cursor_frame);
+  wl_display_destroy_clients(runtime->display);
   if (runtime->command_bar_buffer) {
     wlr_buffer_drop(&runtime->command_bar_buffer->base);
   }

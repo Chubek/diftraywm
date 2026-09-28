@@ -1,0 +1,5 @@
+G:puts "Scratchpad — type to take notes. Backspace edits; Enter adds a line.";
+G:puts "Text stays with this cell until it is closed. :notelet close removes it.";
+G:puts "";
+const text = notelet:edit "text";
+G:puts text;

@@ -36,7 +36,7 @@ mkdir -p "$wlroots_build"
 # --reconfigure is passed, and skipping it outright would leave a stale build
 # tree whenever wlroots' own meson options change.
 if [ -f "$wlroots_build/build.ninja" ]; then
-  configure_flag=--reconfigure
+  configure_flag="--reconfigure --clearcache"
 else
   configure_flag=
 fi
@@ -44,6 +44,7 @@ fi
 # shellcheck disable=SC2086
 "$meson_bin" setup $configure_flag "$wlroots_build" "$wlroots_src" \
   --buildtype=debugoptimized \
+  "-Dc_link_args=-Wl,-rpath,\$ORIGIN/../vendor/lib:\$ORIGIN" \
   -Dexamples=false \
   -Dtests=false \
   -Dwerror=false \

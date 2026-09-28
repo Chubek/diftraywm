@@ -1,12 +1,16 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct wl_display;
 struct wlr_xdg_toplevel;
 struct diftray_wayland_runtime;
 struct diftray_cell_surface;
+
+typedef void (*diftray_text_renderer)(void *userdata, const char *text,
+    uint32_t *pixels, int width, int height, const float background[4], const float foreground[4]);
 
 typedef bool (*diftray_wayland_key_handler)(void *userdata, uint32_t keysym,
                                             uint32_t modifiers, uint32_t state,
@@ -24,6 +28,11 @@ typedef void (*diftray_wayland_toplevel_request_handler)(
     void *userdata, struct wlr_xdg_toplevel *toplevel, const char *request);
 typedef void (*diftray_wayland_output_handler)(void *userdata, int width,
                                                int height);
+
+struct diftray_output_geometry {
+  const char *name;
+  int x, y, width, height;
+};
 
 struct diftray_wayland_style {
   int border_size;
@@ -44,6 +53,9 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
 bool diftray_wayland_runtime_start(struct diftray_wayland_runtime *runtime);
 void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime);
 
+void diftray_wayland_runtime_set_text_renderer(struct diftray_wayland_runtime *runtime,
+    diftray_text_renderer renderer, void *userdata);
+
 void diftray_wayland_runtime_set_key_handler(
     struct diftray_wayland_runtime *runtime,
     diftray_wayland_key_handler handler, void *userdata);
@@ -58,6 +70,11 @@ void diftray_wayland_runtime_set_focus_handler(
 void diftray_wayland_runtime_set_output_handler(
     struct diftray_wayland_runtime *runtime,
     diftray_wayland_output_handler handler, void *userdata);
+
+bool diftray_wayland_runtime_output_at(struct diftray_wayland_runtime *runtime,
+    size_t index, struct diftray_output_geometry *geometry);
+void diftray_wayland_runtime_set_chrome_box(struct diftray_wayland_runtime *runtime,
+    int x, int y, int width, int height);
 
 bool diftray_wayland_runtime_output_size(struct diftray_wayland_runtime *runtime,
                                          int *width, int *height);

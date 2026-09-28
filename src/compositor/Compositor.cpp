@@ -22,6 +22,7 @@
 #include <charconv>
 #include <cctype>
 #include <cerrno>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -56,6 +57,9 @@ bool theme_pixels(const std::string &value, int &out) {
 
 Compositor::~Compositor() {
   stop();
+  if (notelet_timer_) wl_event_source_remove(notelet_timer_);
+  for (auto *source : signal_sources_) if (source) wl_event_source_remove(source);
+  notelet_cells_.clear();
   for (auto &cell : cells_) {
     detach_cell_surface(cell.get());
   }
@@ -73,10 +77,16 @@ bool Compositor::init() {
   std::filesystem::path config_path = "diftray.conf";
   if (const char *configured = std::getenv("DIFTRAYWM_CONFIG")) {
     config_path = configured;
-  } else if (const char *config_home = std::getenv("XDG_CONFIG_HOME")) {
-    const auto user_config = std::filesystem::path(config_home) / "diftraywm/diftray.conf";
-    if (std::filesystem::exists(user_config)) {
-      config_path = user_config;
+  } else {
+    std::filesystem::path user_directory;
+    if (const char *home = std::getenv("XDG_CONFIG_HOME"); home && *home) user_directory = home;
+    else if (const char *home = std::getenv("HOME"); home && *home) user_directory = std::filesystem::path(home) / ".config";
+    const auto user_config = user_directory / "diftraywm/diftray.conf";
+    if (!user_directory.empty() && std::filesystem::exists(user_config)) config_path = user_config;
+    else if (!std::filesystem::exists(config_path)) {
+      std::error_code error;
+      const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+      if (!error) config_path = executable.parent_path().parent_path() / "share/diftraywm/diftray.conf";
     }
   }
   if (!load_compositor_config(config_path.string(), config_, status_line_)) {
@@ -88,8 +98,9 @@ bool Compositor::init() {
   if (!config_.help_path.empty() && std::filesystem::path(config_.help_path).is_relative()) {
     config_.help_path = (config_path.parent_path() / config_.help_path).lexically_normal().string();
   }
-  help_pager_.set_search_path(config_.help_path.empty() ? DIFTRAY_HELP_DEFAULT_PATH
-                                                         : config_.help_path);
+  help_pager_.set_search_path(config_.help_path.empty()
+      ? (config_path.parent_path() / "help").string() + ":" + DIFTRAY_HELP_DEFAULT_PATH
+      : config_.help_path);
   if (!config_.word_pool.empty()) {
     setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 0);
   }
@@ -98,8 +109,8 @@ bool Compositor::init() {
   ncursor_views_.back()->set_id("primary");
   active_ncursor_ = ncursor_views_.back().get();
   active_ncursor_->set_workspace(current_workspace_);
-  workspace_ncursor_[current_workspace_] = active_ncursor_;
-  workspace_view_[current_workspace_] = active_ncursor_;
+  outputs_[active_output_].ncursors[current_workspace_] = active_ncursor_;
+  outputs_[active_output_].views[current_workspace_] = active_ncursor_;
   cells_.push_back(std::make_unique<Cell>(config_.shell));
   active_ncursor_->insert_cell(cells_.back().get(), false);
   active_ncursor_->set_cell_select_mode(false);
@@ -116,7 +127,9 @@ bool Compositor::init() {
   }
   plugin_manager_ = new PluginManager();
   lua_engine_ = new LuaEngine();
-  nterm_renderer_.init(config_.font, config_.font_size);
+  if (!nterm_renderer_.init(config_.font, config_.font_size)) {
+    status_line_ = "failed to initialize text renderer"; return false;
+  }
   command_context_.compositor = this;
   rebuild_command_context();
   active_view_ = active_ncursor_;
@@ -134,8 +147,11 @@ bool Compositor::init() {
   if (notelet_path) {
     discovery_path = notelet_path;
   } else {
-    if (const char *home = std::getenv("HOME"); home && *home)
+    if (const char *data = std::getenv("XDG_DATA_HOME"); data && *data)
+      discovery_path = std::string(data) + "/diftraywm/notelets:";
+    else if (const char *home = std::getenv("HOME"); home && *home)
       discovery_path = std::string(home) + "/.local/share/diftraywm/notelets:";
+    discovery_path += (config_path.parent_path() / "notelets").string() + ":";
     discovery_path += DIFTRAY_NOTELET_DEFAULT_PATH;
   }
   if (!notelet_catalog_->discover(discovery_path, status_line_)) return false;
@@ -150,6 +166,10 @@ bool Compositor::init() {
     status_line_ = "failed to create Wayland display";
     return false;
   }
+  if (!install_signals()) { status_line_ = "failed to install signal handlers"; return false; }
+  notelet_timer_ = wl_event_loop_add_timer(wl_display_get_event_loop(display_.get()),
+                                          &Compositor::notelets_ready, this);
+  if (!notelet_timer_) { status_line_ = "failed to create Notelet timer"; return false; }
   const char *socket_name = std::getenv("DIFTRAYWM_WAYLAND_SOCKET");
   const char *registered_socket =
       socket_name && *socket_name
@@ -157,7 +177,6 @@ bool Compositor::init() {
           : wl_display_add_socket_auto(display_.get());
   if (!registered_socket) {
     status_line_ = "failed to add Wayland socket";
-    display_.reset();
     return false;
   }
   wayland_socket_ = registered_socket;
@@ -176,7 +195,6 @@ bool Compositor::init() {
   wayland_runtime_ = diftray_wayland_runtime_create(display_.get(), &style);
   if (!wayland_runtime_) {
     status_line_ = "failed to initialize wlroots runtime";
-    display_.reset();
     return false;
   }
   // Keep the parent compositor's WAYLAND_DISPLAY in place while wlroots
@@ -184,6 +202,12 @@ bool Compositor::init() {
   // variable to connect to the parent compositor; replacing it with our
   // newly-created socket here makes it connect back to itself.  Children
   // launched by DiftrayWM are given our socket below, after backend startup.
+  diftray_wayland_runtime_set_text_renderer(wayland_runtime_,
+      [](void *userdata, const char *text, uint32_t *pixels, int width, int height,
+         const float bg[4], const float fg[4]) {
+        auto *self = static_cast<Compositor *>(userdata);
+        self->nterm_renderer_.glyphs()->draw_text(text, pixels, width, height, bg, fg);
+      }, this);
   diftray_wayland_runtime_set_key_handler(wayland_runtime_,
                                           &Compositor::terminal_key_received, this);
   diftray_wayland_runtime_set_toplevel_handler(
@@ -214,7 +238,7 @@ int Compositor::run() {
   }
   std::cerr << "DiftrayWM compositor on WAYLAND_DISPLAY=" << wayland_socket_ << '\n';
   for (auto &cell : cells_) {
-    if (cell && cell->nterm() && !cell->nterm()->running()) {
+    if (cell && cell->nterm() && !notelet_cells_.count(cell.get()) && !cell->nterm()->running()) {
       cell->nterm()->start();
       watch_cell_pty(cell.get());
     }
@@ -307,7 +331,7 @@ void Compositor::render_cell(Cell *cell, bool selected) {
   const std::size_t rows = static_cast<std::size_t>(std::max(1, height / std::max(1, cell_h)));
   if (cell->nterm()->columns() != cols || cell->nterm()->rows() != rows) {
     cell->nterm()->resize(cols, rows);
-    if (notelet_cells_.count(cell)) paint_notelet(cell);
+    if (notelet_cells_.count(cell)) request_notelet(cell, "", "resize");
   }
   std::vector<uint32_t> pixels;
   nterm_renderer_.render(cell->nterm(), pixels, width, height, selected);
@@ -316,6 +340,53 @@ void Compositor::render_cell(Cell *cell, bool selected) {
   diftray_cell_surface_set_highlight(cell->surface(), selected &&
                                         ncursor_view() &&
                                         ncursor_view()->cell_select_mode());
+}
+
+void Compositor::request_notelet(Cell *cell, const std::string &key, const std::string &event) {
+  auto it = notelet_cells_.find(cell);
+  if (it == notelet_cells_.end() || !cell->nterm()) return;
+  auto *owner = owner_ncursor(cell);
+  it->second->set_context({{"columns", std::to_string(cell->nterm()->columns())},
+      {"rows", std::to_string(cell->nterm()->rows())}, {"cell", cell->id()},
+      {"workspace", std::to_string(owner ? owner->workspace() : current_workspace_)},
+      {"output", owner ? owner->output_name() : active_output_},
+      {"outputs", list_outputs()}, {"cursors", list_cursor_ids()}});
+  std::string error;
+  if (display_) {
+    if (!it->second->request_render(key, error, event)) status_line_ = error;
+    if (notelet_timer_) wl_event_source_timer_update(notelet_timer_, 10);
+  } else {
+    if (!it->second->render(key, error, event)) status_line_ = error;
+    else paint_notelet(cell);
+  }
+}
+
+int Compositor::notelets_ready(void *userdata) {
+  auto *self = static_cast<Compositor *>(userdata);
+  bool busy = false, changed = false;
+  for (auto &[cell, app] : self->notelet_cells_) {
+    std::string error;
+    if (app->poll(error)) {
+      if (!error.empty()) self->status_line_ = app->id() + ": " + error;
+      else {
+        self->paint_notelet(cell);
+        self->render_cell(cell, cell == self->active_cell());
+      }
+      changed = true;
+    }
+    busy |= app->busy();
+  }
+  if (changed) self->update_chrome();
+  if (busy) wl_event_source_timer_update(self->notelet_timer_, 10);
+  return 0;
+}
+
+std::string Compositor::refresh_notelet() {
+  Cell *cell = active_cell();
+  if (!cell || !notelet_cells_.count(cell)) return "no active notelet";
+  request_notelet(cell, "", "refresh");
+  render_cell(cell, true);
+  return "notelet refresh requested";
 }
 
 void Compositor::paint_notelet(Cell *cell) {
@@ -344,6 +415,7 @@ void Compositor::render_all_cells() {
       continue;
     }
     auto *owner = owner_ncursor(cell.get());
+    if (!owner || owner->output_name() != active_output_) continue;
     const bool on_workspace = owner && owner->workspace() == current_workspace_;
     const bool on_active_tab =
         config_.ncursor_mode != "tab" || owner == ncursor;
@@ -358,7 +430,7 @@ void Compositor::render_all_cells() {
       render_cell(cell.get(), cell.get() == focused);
     }
   }
-  paint_help_pager();
+  if (active_output_ == rendering_output_) paint_help_pager();
   (void)ncursor;
 }
 
@@ -370,10 +442,9 @@ void Compositor::apply_view_visibility() {
   const bool show_gcursor =
       gcursor != nullptr && !gcursor->docked() &&
       gcursor->workspace() == current_workspace_;
-  diftray_wayland_runtime_set_gcursor_visible(wayland_runtime_, show_gcursor);
-  diftray_wayland_runtime_set_ncursor_visible(wayland_runtime_, !show_gcursor);
+  diftray_wayland_runtime_set_ncursor_visible(wayland_runtime_, true);
   for (auto &cursor : gcursors_) {
-    if (!cursor || !cursor->toplevel()) {
+    if (!cursor || !cursor->toplevel() || cursor->output_name() != active_output_) {
       continue;
     }
     const bool show = show_gcursor &&
@@ -389,15 +460,16 @@ void Compositor::apply_view_visibility() {
       const int x = static_cast<int>(i * output_width_ / windows.size());
       const int right = static_cast<int>((i + 1) * output_width_ / windows.size());
       diftray_wayland_runtime_layout_gcursor(wayland_runtime_, windows[i]->toplevel(),
-                                             x, config_.status_bar_height,
+                                             output_x_ + x, output_y_ + config_.status_bar_height,
                                              right - x,
                                              std::max(1, output_height_ - config_.status_bar_height));
     }
   } else if (show_gcursor) {
     diftray_wayland_runtime_layout_gcursor(wayland_runtime_, gcursor->toplevel(),
-                                           0, config_.status_bar_height, output_width_,
+                                           output_x_, output_y_ + config_.status_bar_height, output_width_,
                                            std::max(1, output_height_ - config_.status_bar_height));
   }
+  if (active_output_ != rendering_output_) return;
   if (show_gcursor) {
     diftray_wayland_runtime_focus_gcursor(wayland_runtime_, gcursor->toplevel());
   } else {
@@ -465,51 +537,55 @@ void Compositor::update_chrome() {
   }
 }
 
-void Compositor::relayout() {
+void Compositor::layout_current_output() {
   auto *ncursor = ncursor_view();
   if (!ncursor) {
     return;
   }
   int usable_height = output_height_ - config_.status_bar_height;
-  if (command_bar_open_ || help_search_open_) {
+  if (active_output_ == rendering_output_ && (command_bar_open_ || help_search_open_)) {
     usable_height -= config_.command_bar_height;
   }
   const auto workspace_views = ncursors_on_workspace(current_workspace_);
   if (tcursor_view_ && active_view_ == tcursor_view_.get() &&
       tcursor_workspace_ == current_workspace_ && active_cell()) {
-    active_cell()->set_box({0, config_.status_bar_height, output_width_, std::max(1, usable_height)});
+    active_cell()->set_box({output_x_, output_y_ + config_.status_bar_height, output_width_, std::max(1, usable_height)});
   } else if (config_.ncursor_mode == "tab" && workspace_views.size() > 1) {
-    ncursor->set_output_box({0, config_.status_bar_height, output_width_, std::max(1, usable_height)});
+    ncursor->set_output_box({output_x_, output_y_ + config_.status_bar_height, output_width_, std::max(1, usable_height)});
     ncursor->layout();
   } else if (workspace_views.size() > 1 && config_.ncursor_mode == "stack") {
     const int band =
         std::max(1, usable_height / static_cast<int>(workspace_views.size()));
-    int y = config_.status_bar_height;
+    int y = output_y_ + config_.status_bar_height;
     for (auto *view : workspace_views) {
-      view->set_output_box({0, y, output_width_, band});
+      view->set_output_box({output_x_, y, output_width_, band});
       view->layout();
       y += band;
     }
   } else {
-    ncursor->set_output_box({0, config_.status_bar_height, output_width_, std::max(1, usable_height)});
+    ncursor->set_output_box({output_x_, output_y_ + config_.status_bar_height, output_width_, std::max(1, usable_height)});
     ncursor->layout();
   }
   apply_view_visibility();
   render_all_cells();
-  update_chrome();
 }
 
 int Compositor::terminal_fd_ready(int fd, uint32_t mask, void *data) {
   auto *compositor = static_cast<Compositor *>(data);
-  if (!compositor || !(mask & (WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR))) {
+  if (!compositor || !(mask & (WL_EVENT_READABLE | WL_EVENT_WRITABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR))) {
     return 0;
   }
   auto it = compositor->pty_cells_.find(fd);
   if (it == compositor->pty_cells_.end() || !it->second || !it->second->nterm()) {
     return 0;
   }
-  it->second->nterm()->on_readable();
-  compositor->render_cell(it->second, it->second == compositor->active_cell());
+  auto *cell = it->second;
+  if (mask & WL_EVENT_WRITABLE) cell->nterm()->flush_input();
+  if (mask & (WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR)) cell->nterm()->on_readable();
+  if (!cell->nterm()->running()) compositor->unwatch_cell_pty(cell);
+  else wl_event_source_fd_update(compositor->pty_sources_.at(fd), WL_EVENT_READABLE |
+      (cell->nterm()->input_pending() ? WL_EVENT_WRITABLE : 0));
+  compositor->render_cell(cell, cell == compositor->active_cell());
   if (compositor->help_pager_active_ && it->second == compositor->active_cell()) {
     compositor->paint_help_pager();
   }
@@ -574,9 +650,11 @@ void Compositor::handle_output_geometry(void *userdata, int width, int height) {
 }
 
 void Compositor::on_output_geometry(int width, int height) {
-  output_width_ = std::max(1, width);
-  output_height_ = std::max(1, height);
-  relayout();
+  std::vector<OutputGeometry> geometry;
+  diftray_output_geometry item{};
+  for (size_t i = 0; diftray_wayland_runtime_output_at(wayland_runtime_, i, &item); ++i)
+    geometry.push_back({item.name, item.x, item.y, item.width, item.height});
+  synchronize_outputs(geometry);
 }
 
 void Compositor::on_new_toplevel(wlr_xdg_toplevel *toplevel, int client_pid) {
@@ -590,8 +668,10 @@ void Compositor::on_new_toplevel(wlr_xdg_toplevel *toplevel, int client_pid) {
     }
   }
   cursor->set_owner_cell(owner);
-  cursor->set_owner_ncursor(active_ncursor_);
-  cursor->set_workspace(current_workspace_);
+  auto *parent = owner ? owner_ncursor(owner) : active_ncursor_;
+  cursor->set_owner_ncursor(parent);
+  cursor->set_workspace(parent ? parent->workspace() : current_workspace_);
+  cursor->set_output_name(parent ? parent->output_name() : active_output_);
   GCursorView *raw = cursor.get();
   gcursors_.push_back(std::move(cursor));
   if (wayland_runtime_) {
@@ -615,6 +695,8 @@ void Compositor::on_toplevel_destroy(wlr_xdg_toplevel *toplevel) {
       slot = nullptr;
     }
   }
+  for (auto &cell : cells_) cell->cursor_area().forget(cursor);
+  for (auto &view : ncursor_views_) view->cursor_area().forget(cursor);
   gcursors_.erase(std::remove_if(gcursors_.begin(), gcursors_.end(),
                                  [cursor](const auto &owned) {
                                    return owned.get() == cursor;
@@ -764,6 +846,18 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
   if (state != WL_KEYBOARD_KEY_STATE_PRESSED) {
     return command_bar_open_ || active_gcursor() == nullptr;
   }
+  if (pending_kill_) {
+    Cell *target = pending_kill_;
+    if (keysym == XKB_KEY_y || keysym == XKB_KEY_Y || keysym == XKB_KEY_Return) {
+      pending_kill_ = nullptr;
+      status_line_ = erase_cell(target);
+    } else if (keysym == XKB_KEY_n || keysym == XKB_KEY_N || keysym == XKB_KEY_Escape) {
+      pending_kill_ = nullptr;
+      status_line_ = "cell removal cancelled";
+    }
+    update_chrome();
+    return true;
+  }
   const bool meta = (modifiers & WLR_MODIFIER_LOGO) != 0;
   if (meta && keysym == XKB_KEY_Escape) {
     stop();
@@ -806,8 +900,14 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     return true;
   }
   if (meta && (keysym == XKB_KEY_k || keysym == XKB_KEY_K)) {
-    status_line_ = kill_selected_cell();
+    pending_kill_ = active_cell();
+    status_line_ = pending_kill_ ? "Kill cell " + pending_kill_->id() + "? y / n" : "no active cell";
     relayout();
+    return true;
+  }
+  if (meta && (keysym == XKB_KEY_bracketleft || keysym == XKB_KEY_bracketright)) {
+    status_line_ = focus_output(keysym == XKB_KEY_bracketleft ? "prev" : "next");
+    update_chrome();
     return true;
   }
   if (meta && keysym == XKB_KEY_n) {
@@ -888,11 +988,30 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
       else if (keysym == XKB_KEY_Down) key = "Down";
       else if (keysym == XKB_KEY_Left) key = "Left";
       else if (keysym == XKB_KEY_Right) key = "Right";
-      else if (unicode > 0 && unicode < 128) key.assign(1, static_cast<char>(unicode));
+      else if (keysym == XKB_KEY_Tab) key = "Tab";
+      else if (keysym == XKB_KEY_Delete) key = "Delete";
+      else if (keysym == XKB_KEY_Home) key = "Home";
+      else if (keysym == XKB_KEY_End) key = "End";
+      else if (keysym == XKB_KEY_Page_Up) key = "PageUp";
+      else if (keysym == XKB_KEY_Page_Down) key = "PageDown";
+      else if (unicode >= 32 && unicode <= 0x10ffff && !(unicode >= 0xd800 && unicode <= 0xdfff)) {
+        if (unicode < 0x80) key += static_cast<char>(unicode);
+        else if (unicode < 0x800) {
+          key += static_cast<char>(0xc0 | (unicode >> 6));
+          key += static_cast<char>(0x80 | (unicode & 63));
+        } else if (unicode < 0x10000) {
+          key += static_cast<char>(0xe0 | (unicode >> 12));
+          key += static_cast<char>(0x80 | ((unicode >> 6) & 63));
+          key += static_cast<char>(0x80 | (unicode & 63));
+        } else {
+          key += static_cast<char>(0xf0 | (unicode >> 18));
+          key += static_cast<char>(0x80 | ((unicode >> 12) & 63));
+          key += static_cast<char>(0x80 | ((unicode >> 6) & 63));
+          key += static_cast<char>(0x80 | (unicode & 63));
+        }
+      }
       if (!key.empty()) {
-        std::string error;
-        if (!it->second->render(key, error)) status_line_ = error;
-        else paint_notelet(cell);
+        request_notelet(cell, key, "key");
         render_cell(cell, true);
         update_chrome();
       }
@@ -900,6 +1019,9 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     }
     cell->nterm()->handle_key(keysym, keysym < 128 ? keysym : 0, tsm_mods(modifiers),
                               unicode);
+    if (auto source = pty_sources_.find(cell->nterm()->master_fd()); source != pty_sources_.end())
+      wl_event_source_fd_update(source->second, WL_EVENT_READABLE |
+          (cell->nterm()->input_pending() ? WL_EVENT_WRITABLE : 0));
     render_cell(cell, true);
     return true;
   }
@@ -938,6 +1060,12 @@ std::string Compositor::open_help_bookmark(const std::string &name) {
 }
 
 void Compositor::set_active_view(View *view) {
+  if (view && view->output_name() != active_output_) focus_output(view->output_name());
+  if (view && view->type() == ViewType::GCURSOR) {
+    auto *cursor = static_cast<GCursorView *>(view);
+    if (cursor->workspace() != current_workspace_) switch_workspace(cursor->workspace());
+    if (cursor->owner_ncursor()) active_ncursor_ = cursor->owner_ncursor();
+  }
   active_view_ = view;
   if (view && view->type() == ViewType::NCURSOR) {
     active_ncursor_ = static_cast<NCursorView *>(view);
@@ -993,14 +1121,14 @@ std::string Compositor::spawn_cell(bool above) {
   if (!ncursor_view()) {
     return "spawn failed: no ncursor view";
   }
-  cells_.push_back(std::make_unique<Cell>(config_.shell));
+  cells_.push_back(std::make_unique<Cell>(ncursor_view()->default_shell().empty() ? config_.shell : ncursor_view()->default_shell()));
   auto *cell = cells_.back().get();
   if (!ncursor_view()->insert_cell(cell, above)) {
     cells_.pop_back();
     return "spawn failed: could not insert cell";
   }
   attach_cell_surface(cell);
-  if (cell->nterm()) {
+  if (display_ && cell->nterm()) {
     cell->nterm()->start();
     watch_cell_pty(cell);
   }
@@ -1022,6 +1150,17 @@ std::string Compositor::erase_cell(Cell *cell) {
   if (workspace_cells <= 1) {
     return "kill failed: cannot remove the last cell";
   }
+  // Graphical clients outlive the terminal that launched them. Transfer their
+  // dock ownership before destroying the cell to avoid dangling pointers.
+  auto *parent = owner_ncursor(cell);
+  for (auto &cursor : gcursors_) {
+    if (cursor->owner_cell() != cell) continue;
+    cell->cursor_area().forget(cursor.get());
+    cursor->set_owner_cell(nullptr);
+    cursor->set_owner_ncursor(parent);
+    if (parent && cursor->docked()) parent->cursor_area().dock(cursor.get());
+  }
+  if (pending_kill_ == cell) pending_kill_ = nullptr;
   detach_cell_surface(cell);
   notelet_cells_.erase(cell);
   if (auto *owner = owner_ncursor(cell)) {
@@ -1029,7 +1168,7 @@ std::string Compositor::erase_cell(Cell *cell) {
   } else if (ncursor_view()) {
     ncursor_view()->remove_cell(cell);
   }
-  if (tcursor_view_) {
+  if (tcursor_view_ && tcursor_view_->cell() == cell) {
     tcursor_view_.reset();
     tcursor_workspace_ = 0;
     active_view_ = ncursor_view();
@@ -1039,6 +1178,28 @@ std::string Compositor::erase_cell(Cell *cell) {
                                 return owned.get() == cell;
                               }),
                cells_.end());
+  if (parent && !parent->active_cell()) {
+    NCursorView *replacement = nullptr;
+    for (auto *view : ncursors_on_workspace(parent->workspace()))
+      if (view != parent && view->active_cell()) { replacement = view; break; }
+    if (replacement) {
+      for (auto &cursor : gcursors_) {
+        if (cursor->owner_ncursor() != parent) continue;
+        parent->cursor_area().forget(cursor.get());
+        cursor->set_owner_ncursor(replacement);
+        if (cursor->docked()) replacement->cursor_area().dock(cursor.get());
+      }
+      for (auto &[name, output] : outputs_)
+        for (int ws = kMinWorkspace; ws <= kMaxWorkspace; ++ws) {
+          if (output.ncursors[ws] == parent) output.ncursors[ws] = replacement;
+          if (output.views[ws] == parent) output.views[ws] = replacement;
+        }
+      if (active_ncursor_ == parent) active_ncursor_ = replacement;
+      if (active_view_ == parent) active_view_ = replacement;
+      ncursor_views_.erase(std::remove_if(ncursor_views_.begin(), ncursor_views_.end(),
+          [parent](const auto &view) { return view.get() == parent; }), ncursor_views_.end());
+    }
+  }
   rebuild_command_context();
   relayout();
   return "removed cell";
@@ -1086,6 +1247,7 @@ std::string Compositor::promote_active_cell_to_tcursor() {
     return "promote failed: no active cell";
   }
   tcursor_view_ = std::make_unique<TCursorView>(cell);
+  tcursor_view_->set_output_name(active_output_);
   active_view_ = tcursor_view_.get();
   tcursor_workspace_ = current_workspace_;
   rebuild_command_context();
@@ -1110,10 +1272,10 @@ std::string Compositor::dock_cursor(const std::string &id) {
   if (!cursor) {
     return "dock failed: cursor not found";
   }
-  if (auto *cell = cursor->owner_cell() ? cursor->owner_cell() : active_cell()) {
+  if (auto *cell = cursor->owner_cell()) {
     cell->cursor_area().dock(cursor);
-  } else if (ncursor_view()) {
-    ncursor_view()->cursor_area().dock(cursor);
+  } else if (cursor->owner_ncursor()) {
+    cursor->owner_ncursor()->cursor_area().dock(cursor);
   } else {
     cursor->dock();
   }
@@ -1136,8 +1298,8 @@ std::string Compositor::restore_cursor(const std::string &id) {
   }
   if (auto *cell = cursor->owner_cell()) {
     cell->cursor_area().restore(cursor);
-  } else if (ncursor_view()) {
-    ncursor_view()->cursor_area().restore(cursor);
+  } else if (cursor->owner_ncursor()) {
+    cursor->owner_ncursor()->cursor_area().restore(cursor);
   } else {
     cursor->restore();
   }
@@ -1174,7 +1336,9 @@ std::string Compositor::list_cursor_ids() const {
 std::string Compositor::list_docked_cursors() const {
   std::ostringstream out;
   for (const auto &cursor : gcursors_) {
-    if (cursor && cursor->docked()) {
+    if (cursor && cursor->docked() &&
+        (command_bar_.scope == CommandScope::CELL ? cursor->owner_cell() == active_cell()
+          : cursor->owner_ncursor() == active_ncursor_ && !cursor->owner_cell())) {
       if (out.tellp() > 0) {
         out << ' ';
       }
@@ -1198,6 +1362,7 @@ std::string Compositor::assign_cursor_slot(const std::string &id, int slot) {
       assigned = nullptr;
     }
   }
+  if (quick_restore_[slot]) quick_restore_[slot]->set_quick_restore_slot(std::nullopt);
   quick_restore_[slot] = cursor;
   cursor->set_quick_restore_slot(slot);
   if (ncursor_view()) {
@@ -1214,18 +1379,24 @@ std::string Compositor::restore_quick_slot(int slot) {
 }
 
 std::string Compositor::set_shell_override(const std::string &shell, CommandScope scope) {
+  if (shell.empty() || ::access(shell.c_str(), X_OK) != 0) return "shell is not executable: " + shell;
+  auto change = [&](Cell *cell, bool individual) {
+    unwatch_cell_pty(cell);
+    cell->set_shell_override(shell, individual);
+    if (display_ && !notelet_cells_.count(cell)) {
+      cell->nterm()->start();
+      watch_cell_pty(cell);
+    }
+  };
   if (scope == CommandScope::CELL) {
-    if (auto *cell = active_cell()) {
-      cell->set_shell_override(shell);
-      return "set cell shell to " + shell;
-    }
-    return "set shell failed: no active cell";
+    if (!active_cell()) return "set shell failed: no active cell";
+    change(active_cell(), true);
+    return "set cell shell to " + shell;
   }
-  for (auto &cell : cells_) {
-    if (cell) {
-      cell->set_shell_override(shell);
-    }
-  }
+  if (!active_ncursor_) return "set shell failed: no active ncursor";
+  active_ncursor_->set_default_shell(shell);
+  for (auto &cell : cells_)
+    if (owner_ncursor(cell.get()) == active_ncursor_ && !cell->has_shell_override()) change(cell.get(), false);
   return "set global shell to " + shell;
 }
 
@@ -1278,12 +1449,16 @@ std::string Compositor::launch_program(const std::string &command) {
     return "launch failed: fork";
   }
   if (pid == 0) {
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigprocmask(SIG_SETMASK, &mask, nullptr);
     if (display_) {
       setenv("WAYLAND_DISPLAY", wayland_socket_.c_str(), 1);
     }
     ::execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char *>(nullptr));
     _exit(127);
   }
+  launched_pids_.push_back(pid);
   return "launched " + command;
 }
 
@@ -1299,12 +1474,12 @@ std::string Compositor::open_notelet(const std::string &id) {
   std::string error;
   auto notelet = notelet_catalog_->open(id, error);
   if (!notelet) return error;
-  if (!notelet->render("", error)) return "notelet failed: " + error;
   auto cell = std::make_unique<Cell>(config_.shell);
   Cell *raw = cell.get();
   if (!ncursor_view()->insert_cell(raw, false)) return "notelet cell creation failed";
   cells_.push_back(std::move(cell));
   notelet_cells_.emplace(raw, std::move(notelet));
+  request_notelet(raw, "", "open");
   attach_cell_surface(raw);
   paint_notelet(raw);
   rebuild_command_context();
@@ -1320,20 +1495,21 @@ std::string Compositor::close_notelet() {
 
 std::string Compositor::spawn_ncursor() {
   auto view = std::make_unique<NCursorView>();
-  view->set_id("ncursor-" + std::to_string(ncursor_views_.size() + 1));
+  view->set_id("ncursor-" + std::to_string(next_ncursor_id_++));
   view->set_workspace(current_workspace_);
+  view->set_output_name(active_output_);
   cells_.push_back(std::make_unique<Cell>(config_.shell));
   view->insert_cell(cells_.back().get(), false);
   attach_cell_surface(cells_.back().get());
-  if (cells_.back()->nterm()) {
+  if (display_ && cells_.back()->nterm()) {
     cells_.back()->nterm()->start();
     watch_cell_pty(cells_.back().get());
   }
   active_ncursor_ = view.get();
   active_view_ = view.get();
   ncursor_views_.push_back(std::move(view));
-  workspace_ncursor_[current_workspace_] = active_ncursor_;
-  workspace_view_[current_workspace_] = active_ncursor_;
+  outputs_[active_output_].ncursors[current_workspace_] = active_ncursor_;
+  outputs_[active_output_].views[current_workspace_] = active_ncursor_;
   rebuild_command_context();
   relayout();
   return "opened ncursor " + active_ncursor_->id();
@@ -1360,7 +1536,7 @@ NCursorView *Compositor::owner_ncursor(const Cell *cell) const {
 std::vector<NCursorView *> Compositor::ncursors_on_workspace(int workspace) const {
   std::vector<NCursorView *> views;
   for (const auto &view : ncursor_views_) {
-    if (view && view->workspace() == workspace) {
+    if (view && view->workspace() == workspace && view->output_name() == active_output_) {
       views.push_back(view.get());
     }
   }
@@ -1370,7 +1546,7 @@ std::vector<NCursorView *> Compositor::ncursors_on_workspace(int workspace) cons
 std::vector<GCursorView *> Compositor::live_gcursors_on_workspace(int workspace) const {
   std::vector<GCursorView *> views;
   for (const auto &cursor : gcursors_) {
-    if (cursor && !cursor->docked() && cursor->workspace() == workspace) {
+    if (cursor && !cursor->docked() && cursor->workspace() == workspace && cursor->output_name() == active_output_) {
       views.push_back(cursor.get());
     }
   }
@@ -1398,19 +1574,19 @@ void Compositor::remember_workspace_focus() {
   if (current_workspace_ < kMinWorkspace || current_workspace_ > kMaxWorkspace) {
     return;
   }
-  workspace_ncursor_[current_workspace_] = active_ncursor_;
-  workspace_view_[current_workspace_] = active_view_;
+  outputs_[active_output_].ncursors[current_workspace_] = active_ncursor_;
+  outputs_[active_output_].views[current_workspace_] = active_view_;
 }
 
 void Compositor::restore_workspace_focus() {
   NCursorView *ncursor = nullptr;
   if (current_workspace_ >= kMinWorkspace && current_workspace_ <= kMaxWorkspace) {
-    ncursor = workspace_ncursor_[current_workspace_];
+    ncursor = outputs_[active_output_].ncursors[current_workspace_];
   }
   bool ncursor_ok = false;
   for (const auto &view : ncursor_views_) {
     if (ncursor && view.get() == ncursor &&
-        ncursor->workspace() == current_workspace_) {
+        ncursor->workspace() == current_workspace_ && ncursor->output_name() == active_output_) {
       ncursor_ok = true;
       break;
     }
@@ -1418,7 +1594,7 @@ void Compositor::restore_workspace_focus() {
   if (!ncursor_ok) {
     ncursor = nullptr;
     for (const auto &view : ncursor_views_) {
-      if (view && view->workspace() == current_workspace_) {
+      if (view && view->workspace() == current_workspace_ && view->output_name() == active_output_) {
         ncursor = view.get();
         break;
       }
@@ -1427,9 +1603,9 @@ void Compositor::restore_workspace_focus() {
   active_ncursor_ = ncursor;
   View *view = nullptr;
   if (current_workspace_ >= kMinWorkspace && current_workspace_ <= kMaxWorkspace) {
-    view = workspace_view_[current_workspace_];
+    view = outputs_[active_output_].views[current_workspace_];
   }
-  if (!view_exists(view)) {
+  if (!view_exists(view) || view->output_name() != active_output_) {
     view = ncursor;
   } else if (view->type() == ViewType::NCURSOR) {
     if (static_cast<NCursorView *>(view)->workspace() != current_workspace_) {
@@ -1464,7 +1640,7 @@ std::string Compositor::cycle_tab(int delta) {
     index = (index + tabs.size() + static_cast<std::size_t>(step == 1 ? 1 : tabs.size() - 1)) %
             tabs.size();
     set_active_view(tabs[index]);
-    workspace_view_[current_workspace_] = tabs[index];
+    outputs_[active_output_].views[current_workspace_] = tabs[index];
     relayout();
     return "tab " + tabs[index]->word_id();
   }
@@ -1479,8 +1655,8 @@ std::string Compositor::cycle_tab(int delta) {
   index = (index + tabs.size() + static_cast<std::size_t>(step == 1 ? 1 : tabs.size() - 1)) %
           tabs.size();
   set_active_view(tabs[index]);
-  workspace_ncursor_[current_workspace_] = tabs[index];
-  workspace_view_[current_workspace_] = tabs[index];
+  outputs_[active_output_].ncursors[current_workspace_] = tabs[index];
+  outputs_[active_output_].views[current_workspace_] = tabs[index];
   relayout();
   return "tab " + tabs[index]->id();
 }
@@ -1496,7 +1672,7 @@ std::string Compositor::switch_workspace(int number) {
   current_workspace_ = number;
   bool exists = false;
   for (const auto &view : ncursor_views_) {
-    if (view && view->workspace() == number) {
+    if (view && view->workspace() == number && view->output_name() == active_output_) {
       exists = true;
       break;
     }

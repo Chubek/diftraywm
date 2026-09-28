@@ -875,3 +875,6 @@ Thumbs.db
 
 # LaTeX compiler cache
 *.cache
+
+# Local host build tools
+.tools/gperf/

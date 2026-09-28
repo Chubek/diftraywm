@@ -43,6 +43,8 @@ public:
   bool select_cell(Cell *cell);
   const std::string &id() const { return id_; }
   void set_id(std::string id) { id_ = std::move(id); }
+  const std::string &default_shell() const { return default_shell_; }
+  void set_default_shell(std::string shell) { default_shell_ = std::move(shell); }
   int workspace() const { return workspace_; }
   void set_workspace(int workspace) { workspace_ = workspace; }
 
@@ -55,4 +57,5 @@ private:
   wlr_box output_box_{};
   std::string id_ = "ncursor";
   int workspace_ = 1;
+  std::string default_shell_;
 };
