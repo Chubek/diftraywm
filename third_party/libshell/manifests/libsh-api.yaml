@@ -1,0 +1,489 @@
+---
+apiVersion: lakposht.api/v1
+kind: GerdooIDL
+metadata:
+  name: Lakposht
+  shortName: lsh
+  language: C++20
+  headerOnly: true
+  publicHeaders:
+    - include/LibShell.hpp
+    - include/LibShell-Kernel.hpp
+    - include/Lakposht.hpp
+    - include/Lakposht-Kernel.hpp
+  posixAligned: true
+  version: 0.1.0-draft
+  status: draft
+  excludes:
+    - kernel
+---
+
+namespace lakposht {
+    typedef String Path;
+    typedef String ByteString;
+
+    const Int32 EXIT_SUCCESS = 0;
+    const Int32 EXIT_FAILURE = 1;
+
+    enum RedirectKind {
+        In,
+        Out,
+        Err
+    }
+
+    enum RedirectMode {
+        Read,
+        Truncate,
+        Append,
+        Clobber
+    }
+
+    enum Connective {
+        Sequence,
+        Conjunct,
+        Disjunct,
+        Pipe,
+        Background
+    }
+
+    enum StdioTargetKind {
+        Inherit,
+        Null,
+        Pipe,
+        File,
+        Fd,
+        Memory,
+        Sinklet
+    }
+
+    enum PipefailPolicy {
+        Last,
+        AnyFailed,
+        None
+    }
+
+    enum LoggingLevel {
+        Off,
+        Error,
+        Warn,
+        Info,
+        Debug,
+        Trace
+    }
+
+    enum ArgKind {
+        Positional,
+        Flag,
+        Option,
+        Variadic
+    }
+
+    enum TimeUnit {
+        Seconds,
+        Milliseconds,
+        Microseconds
+    }
+
+    enum LineEnding {
+        LF,
+        CRLF,
+        Preserve
+    }
+
+    enum ExpansionKind {
+        Raw,
+        Quoted,
+        Variable,
+        Arithmetic,
+        Lua
+    }
+
+    enum ExecNodeKind {
+        Command,
+        Pipeline,
+        Boolean,
+        Redirection
+    }
+
+    enum ErrorCode {
+        E_NOT_FOUND = 1001,
+        E_PERM = 1002,
+        E_INVALID_REDIR = 1101,
+        E_BAD_CONNECTIVE = 1102,
+        E_EMPTY_ARGV = 1103,
+        E_BAD_EXPANSION = 1201,
+        E_EXEC_FAIL = 1301,
+        E_IO = 1302,
+        E_TIMEOUT = 1303,
+        E_CANCELED = 1304,
+        E_LIMIT = 1305
+    }
+
+    struct EnvVar {
+        String key;
+        String value;
+        Bool exported = true;
+    }
+
+    struct Environment {
+        Vector<EnvVar> vars;
+    }
+
+    struct ResourceLimits {
+        UInt64? cpuTimeSec;
+        UInt64? memoryBytes;
+        UInt64? fileSizeBytes;
+        UInt32? openFiles;
+        UInt32? processes;
+    }
+
+    struct Timeout {
+        UInt64 duration;
+        TimeUnit unit;
+    }
+
+    struct Arg {
+        ArgKind kind;
+        String? name;
+        String? value;
+    }
+
+    struct ExpansionNode {
+        ExpansionKind kind;
+        String data;
+        Bool quoteSensitive = false;
+    }
+
+    struct StdioTarget {
+        StdioTargetKind targetKind;
+        Path? file;
+        Int32? fd;
+        Sinklet? sinklet;
+    }
+
+    struct Redirection {
+        RedirectKind kind;
+        RedirectMode mode;
+        StdioTarget target;
+    }
+
+    struct ExitStatus {
+        Int32 code;
+        Bool signaled = false;
+        Int32? signal;
+        Bool timedOut = false;
+        Bool canceled = false;
+    }
+
+    struct ExecutionReport {
+        ExitStatus status;
+        Int32? pid;
+        UInt64? startTimeNs;
+        UInt64? endTimeNs;
+        UInt64? bytesStdout;
+        UInt64? bytesStderr;
+        String? error;
+    }
+
+    struct ExecSpec {
+        Vector<String> argv;
+        Environment? env;
+        Path? cwd;
+        Vector<Redirection> redirections;
+        Timeout? timeout;
+        ResourceLimits? limits;
+        PipefailPolicy pipefail = Last;
+    }
+
+    struct CommandNode {
+        Vector<ExpansionNode> argv;
+        Vector<EnvVar> envOverlay;
+        Vector<Redirection> redirections;
+    }
+
+    struct PipelineNode {
+        Vector<CommandNode> commands;
+        String? stderrRouting;
+        PipefailPolicy pipefail = Last;
+    }
+
+    struct BooleanNode {
+        ExecNode left;
+        ExecNode right;
+        Connective connective;
+    }
+
+    struct RedirNode {
+        ExecNode subject;
+        Vector<Redirection> redirections;
+    }
+
+    @variant
+    struct ExecNode {
+        ExecNodeKind kind;
+        CommandNode? command;
+        PipelineNode? pipeline;
+        BooleanNode? boolean;
+        RedirNode? redirection;
+    }
+
+    struct SinkletContext {
+        Shell& shell;
+        String source;
+    }
+
+    interface Writer {
+        void write(in String data) throws (ErrorCode);
+        void flush() throws (ErrorCode);
+        void close() throws (ErrorCode);
+    }
+
+    interface Sink {
+        void route_stdout(in Writer out);
+        void route_stderr(in Writer err);
+        void merge_stderr(in Bool on = true);
+    }
+
+    interface Sinklet {
+        virtual void begin(inout SinkletContext context) throws (ErrorCode);
+        virtual void write(in String chunk, inout SinkletContext context) throws (ErrorCode);
+        virtual void end(inout SinkletContext context) throws (ErrorCode);
+    }
+
+    interface EnvironmentView {
+        String? get(in String key);
+        void set(in String key, in String value, in Bool exported = true);
+        void unset(in String key);
+        void export_all();
+        Vector<EnvVar> as_vector();
+    }
+
+    interface Executor {
+        ExecutionReport run(in ExecSpec spec) throws (ErrorCode);
+        ExecutionReport spawn(in ExecSpec spec) throws (ErrorCode);
+        void kill(in Int32 pid, in Int32 signal) throws (ErrorCode);
+        void cancel(in Int32 pid) throws (ErrorCode);
+    }
+
+    interface Expander {
+        String eval(in ExpansionNode node, in Environment env) throws (ErrorCode);
+        Vector<String> expand_args(in Vector<ExpansionNode> nodes, in Environment env) throws (ErrorCode);
+    }
+
+    interface Shell {
+        void set_option_pipefail(in PipefailPolicy policy);
+        void set_option_trace(in Bool on);
+        void echo(in String text) throws (ErrorCode);
+
+        EnvironmentView& env();
+
+        ExitStatus run(in ExecNode program) throws (ErrorCode);
+        ExitStatus run_dsl(in dsl::Node program) throws (ErrorCode);
+
+        CommandQueueBuilder queue();
+        PipelineBuilder create_pipeline_builder(in Bool separateStderr = false);
+
+        XiAdapter load_xi_adapter(in String nameOrPath) throws (ErrorCode);
+        Puppeteer make_puppeteer(in Sinklet? logger = null);
+
+        Shell& set_assign(in String key, in ExpansionNode value);
+        Shell& set_exec(in Vector<ExpansionNode> argv);
+        ExitStatus execute() throws (ErrorCode);
+    }
+
+    interface Subshell {
+        Vector<ExpansionNode> args();
+        EnvironmentView& env();
+
+        ExitStatus execute_command(in Vector<ExpansionNode> argv) throws (ErrorCode);
+        void exit_subshell(in Int32 code);
+    }
+
+    interface CommandBuilder {
+        CommandBuilder& add_exec(in Vector<ExpansionNode> argv);
+        CommandBuilder& set_env(in Vector<EnvVar> overlay);
+        CommandBuilder& set_cwd(in Path cwd);
+        CommandBuilder& set_redirect(in Redirection redir);
+        CommandNode to_command() throws (ErrorCode);
+    }
+
+    interface PipelineBuilder {
+        PipelineBuilder& add_command(in CommandNode command);
+        PipelineBuilder& set_stderr_routing(in String routing);
+        PipelineBuilder& set_pipefail(in PipefailPolicy policy);
+        PipelineBuilder& add_sink(in Writer out);
+        PipelineBuilder& set_timeout(in Timeout timeout);
+        ExitStatus execute() throws (ErrorCode);
+    }
+
+    interface CommandQueueBuilder {
+        CommandQueueBuilder& set_function(in String name, in SubshellFunction function);
+        CommandQueueBuilder& set_assign(in String key, in ExpansionNode value);
+        CommandQueueBuilder& set_exec(in Vector<ExpansionNode> argv);
+        CommandQueueBuilder& set_redirect(in Redirection redir);
+        CommandQueueBuilder& set_connective(in Connective connective);
+        Job enqueue() throws (ErrorCode);
+    }
+
+    interface Job {
+        ExitStatus execute() throws (ErrorCode);
+    }
+
+    interface XiAdapter {
+        XiAdapter& add_arg_flag(in String name);
+        XiAdapter& add_arg_option(in String name, in String value);
+        XiAdapter& add_arg_pos(in String value);
+        void clear_args();
+        XiAdapter& set_timeout(in Timeout timeout);
+        XiAdapter& set_env(in Vector<EnvVar> overlay);
+        ExitStatus run() throws (ErrorCode);
+    }
+
+    interface Puppeteer {
+        void spawn(in Vector<String> argv) throws (ErrorCode);
+        Bool expect(in String pattern, in Timeout? timeout = null) throws (ErrorCode);
+        void send(in String bytes) throws (ErrorCode);
+        void send_line(in String line) throws (ErrorCode);
+        String capture_until(in String pattern, in Timeout? timeout = null) throws (ErrorCode);
+        void interrupt() throws (ErrorCode);
+        void terminate() throws (ErrorCode);
+        void kill(in Int32 signal) throws (ErrorCode);
+        ExitStatus wait() throws (ErrorCode);
+    }
+
+    @callback
+    interface SubshellFunction {
+        void call(inout Subshell subshell) throws (ErrorCode);
+    }
+
+    @callback
+    interface LineSinkletFunction {
+        void call(in String line, inout SinkletContext context, inout Writer out) throws (ErrorCode);
+    }
+
+    @callback
+    interface BlockSinkletFunction {
+        void call(in String block, inout SinkletContext context, inout Writer out) throws (ErrorCode);
+    }
+
+    @callback
+    interface UnbufSinkletFunction {
+        void call(in String chunk, inout SinkletContext context, inout Writer out) throws (ErrorCode);
+    }
+
+    Environment derive_system_env();
+    Environment merge(in Environment base, in Vector<EnvVar> overlay) throws (ErrorCode);
+
+    Writer make_writer_fd(in Int32 fd, in Bool owning) throws (ErrorCode);
+    Writer make_writer_file(in Path path, in Bool append = false) throws (ErrorCode);
+    Writer make_writer_stdout();
+    Writer make_writer_stderr();
+
+    Sink make_buffered_sink(in NativeFileHandle streamLike);
+    Sink make_sink(in Writer out, in Writer err);
+
+    Sinklet make_line_sinklet(inout Shell shell, in LineSinkletFunction function, in LineEnding ending = LF);
+    Sinklet make_block_sinklet(inout Shell shell, in BlockSinkletFunction function);
+    Sinklet make_unbuf_sinklet(inout Shell shell, in UnbufSinkletFunction function);
+
+    Executor make_system_executor();
+    Executor make_virtual_executor();
+
+    Expander make_global_expander();
+
+    Shell make_sandboxed_shell(
+        in String name,
+        in Environment env,
+        in Executor executor,
+        in Sink sink,
+        in Expander expander
+    );
+
+    CommandBuilder create_command_builder();
+    PipelineBuilder create_pipeline_builder(in Bool separateStderr = false);
+
+    XiAdapter load_xi_adapter(in String nameOrPath) throws (ErrorCode);
+
+    ExpansionNode quote(in String value);
+    ExpansionNode arith(in String expression);
+    ExpansionNode lua(in String script);
+    ExpansionNode expandvar(in String variable);
+    ExpansionNode flag(in String value);
+    ExpansionNode multiflag(in String value);
+    ExpansionNode pos(in String value);
+
+    StdioTarget file(in Path path, in Bool append = false);
+    StdioTarget sink(in Sinklet sinklet);
+
+    namespace arg {
+        Arg flag(in String name);
+        Arg option(in String name, in String value);
+        Arg pos(in String value);
+    }
+
+    namespace batteries {
+        interface LineSinklet : lakposht::Sinklet {
+            virtual void on_line(in String line, inout SinkletContext context) throws (ErrorCode);
+        }
+
+        interface BlockSinklet : lakposht::Sinklet {
+            virtual void on_block(in String block, inout SinkletContext context) throws (ErrorCode);
+        }
+
+        interface UnbufSinklet : lakposht::Sinklet {
+            virtual void on_chunk(in String chunk, inout SinkletContext context) throws (ErrorCode);
+        }
+
+        interface GrepSinklet : lakposht::Sinklet {
+            Bool matches(in String line);
+        }
+
+        interface ForwardSinklet : lakposht::Sinklet {
+            void set_next(in Writer writer);
+        }
+
+        interface TeeSinklet : lakposht::Sinklet {
+            void add_target(in Writer writer);
+            void clear_targets();
+        }
+    }
+
+    namespace dsl {
+        struct Node {
+            ExecNode program;
+        }
+
+        struct Cmd {
+            ExecNode program;
+        }
+
+        struct File {
+            StdioTarget target;
+        }
+
+        struct Sink {
+            StdioTarget target;
+        }
+
+        Cmd cmd(in String executable);
+        Cmd cmd1(in String executable, in String arg1);
+        Cmd cmd2(in String executable, in String arg1, in String arg2);
+        Cmd cmd3(in String executable, in String arg1, in String arg2, in String arg3);
+        Cmd cmdv(in String executable, in Vector<String> args);
+
+        File file(in String path, in Bool append = false);
+        Sink sink(in lakposht::Sinklet sinklet);
+
+        Node pipe(in Node lhs, in Node rhs);
+        Node redirect_out(in Node lhs, in File rhs);
+        Node redirect_out_append(in Node lhs, in File rhs);
+        Node redirect_sink(in Node lhs, in Sink rhs);
+        Node and_then(in Node lhs, in Node rhs);
+        Node or_else(in Node lhs, in Node rhs);
+
+        Node from_cmd(in Cmd command);
+    }
+}
+
+@native
+typedef Opaque NativeFileHandle;

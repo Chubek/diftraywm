@@ -1,0 +1,137 @@
+name: 🛠️ [MAINTAINERS ONLY] Good First Issue Template
+description: "⚠️ For project maintainers creating curated onboarding tasks. Contributors: use Bug Report or Feature Request instead."
+title: "Good First Issue: "
+labels: ["good first issue"]
+assignees: ["mpusz"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ Maintainers Only
+
+        **If you are a contributor** looking to report a bug or request a feature, please go back and
+        select the appropriate template:
+        - 🐛 **Bug Report** for issues you've encountered
+        - 🚀 **Feature Request** for new functionality
+        - 📚 **Documentation Issue** for documentation problems
+
+        ---
+
+        ## 🎯 For Maintainers: Creating Mentored First Contributions
+
+        This template helps create **well-structured good-first-issues** that provide:
+        - Clear scope and deliverables
+        - Rationale for the work
+        - Explicit mentorship commitment
+        - Learning objectives
+        - Time estimation
+
+  - type: textarea
+    id: what
+    attributes:
+      label: "📝 What"
+      description: |
+        Clear, specific description of the task.
+        Include file paths, function names, or specific deliverables.
+      placeholder: |
+        Create a new example in `example/temperature_conversion.cpp` that demonstrates:
+        - Converting between Celsius and Fahrenheit using affine space
+        - Using `quantity_point` for absolute temperatures
+        - Using `quantity` for temperature differences
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: "💡 Why"
+      description: |
+        Explain the rationale and impact of this work.
+        Why does this task matter? What problem does it solve?
+      placeholder: |
+        Temperature conversion is a common use case that confuses new users.
+        This example will:
+        - Clarify the distinction between absolute and relative temperatures
+        - Demonstrate a practical application of affine space
+        - Improve discoverability of quantity_point API
+    validations:
+      required: true
+
+  - type: input
+    id: mentorship
+    attributes:
+      label: "🤝 Mentorship"
+      description: Who will guide the contributor through the PR process?
+      placeholder: "@mpusz will help you through the PR process"
+      value: "@mpusz will help you through the PR process"
+    validations:
+      required: true
+
+  - type: textarea
+    id: skills_learned
+    attributes:
+      label: "📚 Skills Learned"
+      description: |
+        What will the contributor learn by completing this task?
+        List specific concepts, APIs, or techniques.
+      placeholder: |
+        - C++20 concepts and constraints
+        - mp-units API design patterns
+        - Affine space modeling
+        - Writing clear example code
+        - Documenting code and examples
+        - Contributing to open source projects
+    validations:
+      required: true
+
+  - type: dropdown
+    id: estimated_time
+    attributes:
+      label: "⏱️ Estimated Time"
+      description: Realistic time estimate for someone new to the project
+      options:
+        - 1 hour
+        - 2 hours
+        - 3-4 hours
+        - 4-8 hours
+        - 8+ hours
+    validations:
+      required: true
+
+  - type: textarea
+    id: getting_started
+    attributes:
+      label: "🚀 Getting Started"
+      description: |
+        Optional: Provide specific guidance on how to begin.
+        Link to relevant docs, similar examples, or key files to review.
+      placeholder: |
+        1. Review the existing examples in `example/` directory, especially `measurement.cpp`
+        2. Read the [Affine Space](https://mpusz.github.io/mp-units/latest/users_guide/framework_basics/concepts/#affine-space) documentation
+        3. Look at `include/mp-units/systems/si/units.h` for reference on how `kelvin` and `degree_Celsius` are defined
+        4. Start by copying `example/hello_units.cpp` as a template
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: "✅ Acceptance Criteria"
+      description: |
+        Optional: Define when this task is complete.
+        Be specific about expected behavior, test cases, or documentation.
+      placeholder: |
+        - [ ] Example compiles without warnings on GCC 12+ and Clang 16+
+        - [ ] Demonstrates both `quantity_point` and `quantity` for temperatures
+        - [ ] Includes comments explaining the affine space concept
+        - [ ] Passes pre-commit formatting checks
+        - [ ] Listed in `example/CMakeLists.txt`
+        - [ ] Described in the documentation under "Examples"
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: "📎 Additional Context"
+      description: |
+        Any other helpful information: links to discussions, related issues, or background.
+      placeholder: |
+        Related to discussion: #123
+        Similar example in another project: <link>

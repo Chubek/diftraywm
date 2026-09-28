@@ -1,0 +1,11 @@
+[flake8]
+max-line-length = 120
+ignore =
+    # comparison to None should be 'if cond is None:'
+    E711,
+    # comparison to True should be 'if cond is True:' or 'if cond:'
+    E712,
+    # whitespace before ':' - conflicts with Black formatter
+    E203,
+    # line break before binary operator
+    W503

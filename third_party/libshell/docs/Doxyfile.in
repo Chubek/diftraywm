@@ -1,0 +1,41 @@
+PROJECT_NAME           = "LibShell"
+PROJECT_NUMBER         = "@LIBSHELL_DOXYGEN_PROJECT_NUMBER@"
+OUTPUT_DIRECTORY       = "@LIBSHELL_DOXYGEN_OUTPUT_DIR@"
+CREATE_SUBDIRS         = NO
+OUTPUT_LANGUAGE        = English
+
+INPUT                  = "@PROJECT_SOURCE_DIR@/include" \
+                         "@PROJECT_SOURCE_DIR@/stdkern" \
+                         "@LIBSHELL_DOXYGEN_INPUT_DIR@/frontpage.md" \
+                         "@LIBSHELL_DOXYGEN_INPUT_DIR@/manual" \
+                         "@LIBSHELL_DOXYGEN_INPUT_DIR@/design"
+USE_MDFILE_AS_MAINPAGE = "@LIBSHELL_DOXYGEN_INPUT_DIR@/frontpage.md"
+FILE_PATTERNS          = *.hpp *.h *.md
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */build/* */third_party/*
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = .
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = YES
+DISABLE_INDEX          = NO
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+GENERATE_MAN           = NO
+
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+BUILTIN_STL_SUPPORT    = YES
+INLINE_SIMPLE_STRUCTS  = YES
+
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_AS_ERROR          = NO

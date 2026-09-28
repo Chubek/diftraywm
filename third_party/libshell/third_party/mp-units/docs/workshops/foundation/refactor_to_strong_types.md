@@ -1,0 +1,139 @@
+# Refactor to Strong Types
+
+In this workshop, you'll refactor a small legacy function that uses raw doubles into a
+type‑safe version using **mp-units**. The goal is to accept and return strong, unit‑aware
+types to prevent dimensional bugs at compile time.
+
+## Problem statement
+
+The legacy function computes _kinetic energy_ ($E = \tfrac{1}{2}\, m\, v^2$) and assumes
+kilogram and metre per second, but nothing enforces this:
+
+
+```cpp
+double kinetic_energy_j(double mass_kg, double speed_mps)
+{
+  return 0.5 * mass_kg * speed_mps * speed_mps; // Joules (if inputs are indeed kg and m/s)
+}
+```
+
+## Your task
+
+Refactor the legacy function, and arguments passed to it from `main()` to use strongly
+typed quantities (e.g., quantity of mass in kilograms, quantity of speed in metre
+per second). Print the result in J and kJ.
+
+When you are done, make a few intentional mistakes and check error messages.
+
+```cpp
+// ce-embed height=650 compiler=clang2110 flags="-std=c++23 -stdlib=libc++ -O3" mp-units=trunk
+#include <mp-units/systems/si.h>
+#include <mp-units/core.h>
+#include <iostream>
+
+using namespace mp_units;
+using namespace mp_units::si::unit_symbols;
+
+// Legacy implementation
+constexpr double kinetic_energy_j(double mass_kg, double speed_mps)
+{
+  return 0.5 * mass_kg * speed_mps * speed_mps;
+}
+
+// TODO: Implement a strongly typed version
+// ...
+
+int main()
+{
+  double mass_kg = 80;
+  double speed_mps = 12.5;
+  auto energy_J = kinetic_energy_j(mass_kg, speed_mps);
+  std::cout << energy_J << " J (" << energy_J / 1000 << " kJ)\n";
+
+  // do the same as above with strong types
+  //
+}
+```
+
+??? tip "Solution"
+
+    ```cpp
+    #include <mp-units/systems/si.h>
+    #include <mp-units/core.h>
+    #include <iostream>
+
+    using namespace mp_units;
+    using namespace mp_units::si::unit_symbols;
+
+    constexpr quantity<si::joule> kinetic_energy(quantity<si::kilogram> mass,
+                                                 quantity<si::metre / si::second> speed)
+    {
+      return 0.5 * mass * pow<2>(speed);
+    }
+
+    int main()
+    {
+      quantity mass = 80 * kg;
+      quantity speed = 12.5 * (m / s);
+      quantity energy = kinetic_energy(mass, speed);
+      std::cout << energy << " (" << energy.in(kJ) << ")\n";
+    }
+    ```
+
+
+??? abstract "What you learned?"
+
+    ### Compile-time dimensional safety
+
+    By using `quantity` types with explicit units, the compiler enforces dimensional
+    correctness:
+
+    ```cpp
+    quantity<si::kilogram> mass = 80 * kg;
+    quantity<si::metre / si::second> speed = 12.5 * m / s;
+    ```
+
+    - ✅ Function signatures document expected units
+    - ✅ Wrong units (e.g., passing `length` instead of `mass`) fail at compile time
+    - ✅ No runtime overhead—quantities compile to the same assembly as raw numbers
+
+    ### Automatic dimensional analysis
+
+    The library automatically computes result dimensions from operands:
+
+    ```cpp
+    quantity energy = 0.5 * mass * pow<2>(speed);  // Automatically: kg·m²/s²
+    ```
+
+    - The return type is a derived unit (kg·m²/s²) computed from the arithmetic
+    - This derived unit is compatible with and convertible to `joule` via `.in(J)`
+    - No manual dimension tracking needed
+    - Dimensional consistency is mathematically guaranteed
+
+    ### Unit conversions with `.in()`
+
+    The `.in()` method converts quantities to different units of the same dimension:
+
+    ```cpp
+    energy.in(kJ)  // Convert joules to kilojoules
+    ```
+
+    - Only compatible units are allowed (_length_ cannot convert to _time_)
+    - Conversion factors are applied automatically
+    - Result is a `quantity` in the new unit
+
+
+## References
+
+- [Getting Started: Quick Start](../../getting_started/quick_start.md)
+- [API Reference](../../reference/api_reference.md)
+
+
+## Takeaways
+
+- Function contracts are now self‑documenting and enforced by the type system.
+- Wrong‑unit calls fail at compile time, preventing latent bugs.
+- The return type
+    - communicates its physical meaning, not just a raw number,
+    - ensures that the object returned from a function is the result of correct quantity
+      arithmetic.

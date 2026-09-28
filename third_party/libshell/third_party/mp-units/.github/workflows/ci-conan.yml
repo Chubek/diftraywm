@@ -1,0 +1,287 @@
+# The MIT License (MIT)
+#
+# Copyright (c) 2018 Mateusz Pusz
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Conan CI
+
+on:
+  push:
+    paths-ignore:
+      - "docs/**"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      matrix-seed:
+        description: The random seed for the subset of the full test-matrix to be run (set to '0' to select one at random)
+        required: true
+        type: number
+        default: 0
+
+env:
+  CHANNEL: ${{ fromJSON('["testing", "stable"]')[github.ref_type == 'tag' && startsWith(github.ref_name, 'v')] }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-matrix:
+    name: "Generate build matrix for ${{ github.workflow }}"
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      seed: ${{ steps.set-matrix.outputs.seed }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+      - id: set-matrix
+        run: python .github/generate-job-matrix.py --preset conan --seed ${{ inputs.matrix-seed || 0 }} --debug combinations counts
+      - name: Generate job summary
+        if: always()
+        env:
+          MATRIX_JSON: ${{ steps.set-matrix.outputs.matrix }}
+          MATRIX_SEED: ${{ steps.set-matrix.outputs.seed }}
+        run: python .github/generate-matrix-summary.py >> $GITHUB_STEP_SUMMARY
+  build:
+    name: "${{ matrix.config-summary-str }}"
+    runs-on: ${{ matrix.toolchain.os }}
+    timeout-minutes: 120
+    needs: generate-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{fromJson(needs.generate-matrix.outputs.matrix)}}
+    env:
+      CC: ${{ matrix.toolchain.compiler.cc }}
+      CXX: ${{ matrix.toolchain.compiler.cxx }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Generate unique cache id
+        shell: bash
+        run: echo "cache_id=$(/bin/date -u "+%Y%m%d")" >> $GITHUB_ENV
+      - name: Cache Conan data
+        uses: actions/cache@v5
+        if: always()
+        env:
+          cache-name: cache-conan-data
+        with:
+          path: ~/.conan2/p
+          key: conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-${{ matrix.toolchain.lib }}-${{ matrix.build_type }}-${{ matrix.toolchain.compiler.version }}-${{ matrix.std }}-${{ env.cache_id }}
+          restore-keys: |
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-${{ matrix.toolchain.lib }}-${{ matrix.build_type }}-${{ matrix.toolchain.compiler.version }}-${{ matrix.std }}-
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-${{ matrix.toolchain.lib }}-${{ matrix.build_type }}-${{ matrix.toolchain.compiler.version }}-
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-${{ matrix.toolchain.lib }}-${{ matrix.build_type }}-
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-${{ matrix.toolchain.lib }}-
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-
+            conan-${{ matrix.toolchain.os }}-${{ matrix.formatting }}-
+            conan-${{ matrix.toolchain.os }}-
+      - uses: hendrikmuhs/ccache-action@v1.2.22
+        if: runner.os == 'Linux'
+        with:
+          key: ${{ matrix.toolchain.os }}-${{ matrix.formatting }}-${{ matrix.contracts }}-${{ matrix.toolchain.compiler.type }}-${{ matrix.toolchain.lib }}-${{ matrix.build_type }}-${{ matrix.toolchain.compiler.version }}-${{ matrix.std }}
+          max-size: 50M
+          verbose: 1
+      - name: Install gcc-${{ matrix.toolchain.compiler.version }}
+        if: matrix.toolchain.compiler.type == 'GCC'
+        shell: bash
+        run: |
+          if [[ "${{ matrix.toolchain.compiler.version }}" -ge 15 ]]; then
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            sudo apt update
+          fi
+          sudo apt install -y g++-${{ matrix.toolchain.compiler.version }}
+      - name: Install Clang with apt
+        if: matrix.toolchain.compiler.type == 'CLANG' && matrix.toolchain.os != 'macos-14'
+        shell: bash
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.toolchain.compiler.version }}
+          sudo apt install -y clang-tools-${{ matrix.toolchain.compiler.version }}
+      - name: Install Clang using homebrew
+        if: matrix.toolchain.compiler.type == 'CLANG' && matrix.toolchain.os == 'macos-14'
+        shell: bash
+        run: |
+          brew install llvm@${{ matrix.toolchain.compiler.version }}
+          brew link --force --overwrite llvm@${{ matrix.toolchain.compiler.version }}
+      - name: Install Libc++
+        if: matrix.toolchain.compiler.type == 'CLANG' && matrix.toolchain.lib == 'libc++' && matrix.toolchain.os != 'macos-14'
+        shell: bash
+        run: |
+          sudo apt install -y libc++-${{ matrix.toolchain.compiler.version }}-dev libc++abi-${{ matrix.toolchain.compiler.version }}-dev libunwind-${{ matrix.toolchain.compiler.version }}-dev
+      - name: Fix libc++ std.cppm path for CMake
+        if: matrix.import_std == 'True' && matrix.toolchain.compiler.type == 'CLANG' && matrix.toolchain.os != 'macos-14'
+        shell: bash
+        run: |
+          sudo mkdir -p /lib/share
+          sudo ln -sfn /usr/lib/llvm-${{ matrix.toolchain.compiler.version }}/share/libc++ /lib/share/libc++
+      - name: Select Xcode version
+        if: matrix.toolchain.compiler.type == 'APPLE_CLANG'
+        shell: bash
+        run: |
+          sudo xcode-select -s /Applications/Xcode_${{ matrix.toolchain.compiler.xcode_version }}.app && /usr/bin/xcodebuild -version
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+      - name: Install Ninja
+        shell: bash
+        run: |
+          pip install -U ninja
+      - name: Install Conan
+        shell: bash
+        run: |
+          pip install -U conan
+      - name: Configure Conan
+        shell: bash
+        run: |
+          conan profile detect --force
+          conan profile show -pr default
+      - name: Install Conan dependencies
+        if: matrix.toolchain.compiler.type != 'MSVC'
+        shell: bash
+        run: |
+          conan install . -b missing ${{ matrix.conan-settings }} \
+                          -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" -c user.mp-units.build:all=True \
+                          ${{ matrix.conan-args }}
+      - name: Install Conan dependencies
+        if: matrix.toolchain.compiler.type == 'MSVC'
+        shell: bash
+        run: |
+          conan install . -b missing ${{ matrix.conan-settings }} \
+                          -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" -c user.mp-units.build:all=False \
+                          ${{ matrix.conan-args }}
+      - name: Print tool versions
+        if: matrix.toolchain.compiler.type == 'MSVC'
+        shell: cmd
+        run: |
+          call build\generators\conanbuild.bat
+          cl 2>&1
+          cmake --version 2>&1
+          ninja --version 2>&1
+          conan --version
+          python --version
+      - name: Print tool versions
+        if: matrix.toolchain.compiler.type != 'MSVC'
+        shell: bash
+        run: |
+          source build/generators/conanbuild.sh
+          ${CXX} --version 2>&1 || true
+          cmake --version 2>&1 || true
+          ninja --version 2>&1 || true
+          conan --version
+          python3 --version
+      - name: Create Conan package
+        if: matrix.toolchain.compiler.type != 'MSVC'
+        shell: bash
+        run: |
+          conan create . --user mpusz --channel ${CHANNEL} --lockfile-out=package.lock \
+                         -b mp-units/* -b missing ${{ matrix.conan-settings }} \
+                         -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" -c user.mp-units.build:all=True \
+                         ${{ matrix.conan-args }}
+      - name: Create Conan package
+        if: matrix.toolchain.compiler.type == 'MSVC'
+        shell: bash
+        run: |
+          conan create . --user mpusz --channel ${CHANNEL} --lockfile-out=package.lock \
+                         -b mp-units/* -b missing ${{ matrix.conan-settings }} \
+                         -c tools.cmake.cmaketoolchain:generator="Ninja Multi-Config" -c user.mp-units.build:all=False \
+                         ${{ matrix.conan-args }}
+      - name: Obtain package reference
+        id: get-package-ref
+        shell: bash
+        run: |
+          echo "PACKAGE_REF=`egrep -o mp-units[^%]+ package.lock`" >> ${GITHUB_OUTPUT}
+      - name: Upload mp-units Conan package to Conan CI repository
+        if: github.ref == 'refs/heads/master' || env.CHANNEL == 'stable'
+        shell: bash
+        run: |
+          conan remote add conan-mpusz-ci https://mpusz.jfrog.io/artifactory/api/conan/conan-ci
+          conan remote login conan-mpusz-ci ${{ secrets.CONAN_LOGIN_USERNAME }} -p ${{ secrets.CONAN_CI_PASSWORD }}
+          conan upload ${{ steps.get-package-ref.outputs.package_ref }} -r conan-mpusz-ci --confirm
+      - name: Clean Conan cache before backup
+        shell: bash
+        run: |
+          conan remove mp-units --confirm
+          conan remove *#~latest --confirm
+          conan remove *:*#~latest --confirm
+          conan cache clean "*" -s -b -d
+
+      - name: Generate job summary
+        if: failure()
+        shell: bash
+        env:
+          CONAN_SETTINGS: ${{ matrix.conan-settings }}
+          CONAN_ARGS: ${{ matrix.conan-args }}
+          COMPILER_TYPE: ${{ matrix.toolchain.compiler.type }}
+        run: |
+          echo "## ❌ Build Failed: ${{ matrix.config-summary-str }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Local repro** (in the provided '.devcontainer' or GitHub CodeSpaces environment):" >> $GITHUB_STEP_SUMMARY
+          echo '```sh' >> $GITHUB_STEP_SUMMARY
+          [ "${COMPILER_TYPE}" != "MSVC" ] && ALL="True" || ALL="False"
+          echo "conan create . -b 'mp-units/*' -b missing ${CONAN_SETTINGS} -c user.mp-units.build:all=${ALL} ${CONAN_ARGS}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+    outputs:
+      package_ref: ${{ steps.get-package-ref.outputs.PACKAGE_REF }}
+
+  promote_package:
+    if: github.ref == 'refs/heads/master' || (github.ref_type == 'tag' && startsWith(github.ref_name, 'v'))
+    needs: build
+    name: Promote Conan package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+      - name: Install Conan
+        shell: bash
+        run: |
+          pip install -U conan
+      - name: Configure Conan
+        shell: bash
+        run: |
+          conan remote add conan-mpusz-ci https://mpusz.jfrog.io/artifactory/api/conan/conan-ci
+          conan remote add conan-mpusz-oss https://mpusz.jfrog.io/artifactory/api/conan/conan-oss
+      - name: Promote mp-units Conan package
+        shell: bash
+        run: |
+          conan remote login conan-mpusz-ci ${{ secrets.CONAN_LOGIN_USERNAME }} -p ${{ secrets.CONAN_CI_PASSWORD }}
+          conan remote login conan-mpusz-oss ${{ secrets.CONAN_LOGIN_USERNAME }} -p ${{ secrets.CONAN_PASSWORD }}
+          conan download ${{ needs.build.outputs.package_ref }} -r conan-mpusz-ci
+          conan upload ${{ needs.build.outputs.package_ref }} -r conan-mpusz-oss --confirm
+      - name: Do housekeeping on conan-mpusz-oss
+        shell: bash
+        run: |
+          conan remove mp-units/*#~latest --confirm -r conan-mpusz-oss
+          conan remove mp-units/*:*#~latest --confirm -r conan-mpusz-oss

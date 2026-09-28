@@ -1,0 +1,182 @@
+# Character of a Quantity
+
+!!! warning
+
+    This chapter's features are experimental and subject to change or removal.
+    Please share your feedback if something seems wrong or could be improved.
+
+
+## Scalars, vectors, and tensors
+
+!!! quote "ISO 80000-2"
+
+    Scalars, vectors and tensors are mathematical objects that can be used to denote certain physical
+    quantities and their values. They are as such independent of the particular choice of a coordinate system,
+    whereas each scalar component of a vector or a tensor and each component vector and component
+    tensor depend on that choice.
+
+Such distinction is important because each quantity character represents different properties
+and allows different operations to be done on its quantities.
+
+For example, imagine a physical units library that allows the creation of a $speed$ quantity
+from both $length / time$ and $length * time$.
+It wouldn't be too safe to use such a product, right?
+
+Now we have to realize that both of the above operations (multiplication and division)
+are not even mathematically defined for linear algebra types such as vectors or tensors.
+On the other hand, two vectors can be passed as arguments to dot and cross-product operations.
+The result of the first one is a scalar. The second one results in a vector that is
+perpendicular to both vectors passed as arguments. Again, it wouldn't be safe to allow
+replacing those two operations with each other or expect the same results from both cases.
+This simply can't work.
+
+
+## ISQ defines quantities of all characters
+
+While defining quantities, ISO 80000 explicitly mentions when a specific quantity has a vector
+or tensor character. Here are some examples:
+
+| Quantity                 |  Character   |                    Quantity Equation                    |
+|--------------------------|:------------:|:-------------------------------------------------------:|
+| $duration$               |    scalar    |                    _{base quantity}_                    |
+| $mass$                   |    scalar    |                    _{base quantity}_                    |
+| $length$                 |    scalar    |                    _{base quantity}_                    |
+| $path\; length$          |    scalar    |                    _{base quantity}_                    |
+| $radius$                 |    scalar    |                    _{base quantity}_                    |
+| $position\; vector$      |  **vector**  |                    _{base quantity}_                    |
+| $velocity$               |  **vector**  |             $position\; vector / duration$              |
+| $acceleration$           |  **vector**  |                  $velocity / duration$                  |
+| $force$                  |  **vector**  |                  $mass * acceleration$                  |
+| $power$                  |    scalar    |                 $force \cdot velocity$                  |
+| $moment\; of\; force$    |  **vector**  |            $position\; vector \times force$             |
+| $torque$                 |    scalar    |      $moment\; of\; force \cdot \{unit\; vector\}$      |
+| $surface\; tension$      |    scalar    |             $\lvert force \rvert / length$              |
+| $angular\; displacement$ |    scalar    |                $path\; length / radius$                 |
+| $angular\; velocity$     |  **vector**  | $angular\; displacement / duration * \{unit\; vector\}$ |
+| $momentum$               |  **vector**  |                    $mass * velocity$                    |
+| $angular\; momentum$     |  **vector**  |           $position\; vector \times momentum$           |
+| $moment\; of\; inertia$  | **_tensor_** |     $angular\; momentum \otimes angular\; velocity$     |
+
+In the above equations:
+
+- $a * b$ - regular multiplication where one of the arguments has to be scalar
+- $a / b$ - regular division where the divisor has to be scalar
+- $a \cdot b$ - dot product of two vectors
+- $a \times b$ - cross product of two vectors
+- $\lvert a \rvert$ - magnitude of a vector
+- $\{unit\; vector\}$ - a special vector with the magnitude of $1$
+- $a \otimes b$ - tensor product of two vectors or tensors
+
+!!! note
+
+    As of now, all of the C++ physical units libraries on the market besides **mp-units** do not
+    support the operations mentioned above. They expose only multiplication and division operators,
+    which do not work for linear algebra-based representation types. If a user of those libraries
+    would like to create the quantities provided in the above table properly, this would result in
+    a compile-time error stating that multiplication and division of two linear algebra vectors is
+    impossible.
+
+
+## Characters don't apply to dimensions and units
+
+ISO 80000 explicitly states that dimensions are orthogonal to quantity characters:
+
+!!! quote "ISO 80000-1:2009"
+
+    In deriving the dimension of a quantity, no account is taken of its scalar, vector, or tensor character.
+
+Also, it explicitly states that:
+
+!!! quote "ISO 80000-2"
+
+    All units are scalars.
+
+## Defining vector and tensor quantities
+
+To specify that a specific quantity has a vector or tensor character a value of `quantity_character`
+enumeration can be appended to the `quantity_spec` describing such a quantity type:
+
+=== "C++23"
+
+    ```cpp
+    inline constexpr struct displacement : quantity_spec<length, quantity_character::vector> {} displacement;
+    inline constexpr struct position_vector : quantity_spec<displacement> {} position_vector;
+    ```
+
+=== "C++20"
+
+    ```cpp
+    inline constexpr struct displacement : quantity_spec<displacement, length, quantity_character::vector> {} displacement;
+    inline constexpr struct position_vector : quantity_spec<position_vector, displacement> {} position_vector;
+    ```
+
+=== "Portable"
+
+    ```cpp
+    QUANTITY_SPEC(displacement, length, quantity_character::vector);
+    QUANTITY_SPEC(position_vector, displacement);
+    ```
+
+With the above, all the quantities derived from `position_vector` or `displacement`
+will have a correct character determined according to the kind of operations included in the
+[quantity equation](../../reference/glossary.md#quantity-equation) defining a
+[derived quantity](../../reference/glossary.md#derived-quantity).
+
+For example, `velocity` in the below definition will be defined as a vector quantity.
+No explicit character override is needed:
+
+=== "C++23"
+
+    ```cpp
+    inline constexpr struct velocity : quantity_spec<speed, displacement / duration> {} velocity;
+    ```
+
+=== "C++20"
+
+    ```cpp
+    inline constexpr struct velocity : quantity_spec<velocity, speed, displacement / duration> {} velocity;
+    ```
+
+=== "Portable"
+
+    ```cpp
+    QUANTITY_SPEC(velocity, speed, displacement / duration);
+    ```
+
+
+## Representation types for vector and tensor quantities
+
+The `quantity` class template's second parameter is constrained with
+[`RepresentationOf`](concepts.md#RepresentationOf), which verifies that the representation
+type satisfies the requirements for the quantity's character. See
+[Representation Types](representation_types.md) for the full details on requirements and
+how to use custom types.
+
+!!! note
+
+    The current version of the C++ Standard Library does not provide any types that could be used as
+    a representation type for vector and tensor quantities. **mp-units** ships a built-in
+    `cartesian_vector<T>` type for 3-D Cartesian vectors. Any third-party linear algebra library
+    types can also be used via the customization points described in
+    [Representation Types](representation_types.md).
+
+For example, using the built-in `cartesian_vector`:
+
+```cpp
+#include <mp-units/cartesian_vector.h>
+
+Quantity auto q = cartesian_vector{1., 2., 3.} * isq::velocity[m / s];
+```
+
+!!! note
+
+    The following does not work:
+
+    ```cpp
+    Quantity auto q1 = cartesian_vector{1., 2., 3.} * m / s;
+    Quantity auto q2 = isq::velocity(cartesian_vector{1., 2., 3.} * m / s);
+    quantity<isq::velocity[m/s]> q3{cartesian_vector{1., 2., 3.} * m / s};
+    ```
+
+    In all the cases above, the SI unit `m / s` has an associated scalar quantity of `isq::length / isq::duration`.
+    `cartesian_vector` is not a correct representation type for a scalar quantity so the construction fails.

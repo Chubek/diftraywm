@@ -1,0 +1,33 @@
+# Lakposht shell syntax draft for PikoRL-style highlighters.
+name: Lakposht Shell
+scope: source.lakposht-shell
+
+tokens:
+  comment:
+    pattern: "#.*$"
+  string.single:
+    pattern: "'([^']*)'"
+  string.double:
+    pattern: '"([^"\\]|\\.)*"'
+  operator.pipeline:
+    pattern: "\\|"
+  operator.boolean:
+    pattern: "&&|\\|\\|"
+  operator.sequence:
+    pattern: ";"
+  redirection:
+    pattern: "2>>|2>|>>|>|<"
+  variable:
+    pattern: "\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}"
+  arithmetic:
+    pattern: "\\$\\(\\([^)]*\\)\\)"
+  command-substitution:
+    pattern: "\\$\\([^)]*\\)"
+  word:
+    pattern: "[^\\s|&;<>#]+"
+
+precedence:
+  - redirection
+  - operator.pipeline
+  - operator.boolean
+  - operator.sequence

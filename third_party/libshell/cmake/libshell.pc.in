@@ -1,0 +1,11 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/include
+
+Name: libshell
+Description: Header-only C++20 shell runtime and DSL framework
+Version: @PROJECT_VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lshell_qamrpp
+Libs.private: @LIBSHELL_PC_PRIVATE_LIBS@

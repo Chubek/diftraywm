@@ -1,0 +1,52 @@
+---
+apiVersion: lakposht.cli/v1
+kind: CliArgumentSchema
+metadata:
+  name: libsh
+  status: draft
+  runtime: Lakposht
+commands:
+  - name: libsh
+    summary: Standalone Lakposht shell frontend
+    modes:
+      - name: eval
+        description: Execute command text passed as argv
+        arguments:
+          - name: command
+            position: 0
+            variadic: true
+            required: false
+            description: Command text to parse into the runtime IR
+      - name: repl
+        description: Read commands interactively from stdin
+        trigger: no command arguments
+grammar:
+  operators:
+    - token: "|"
+      node: Pipeline
+    - token: "&&"
+      node: Sequence
+      connective: and_if
+    - token: "||"
+      node: Sequence
+      connective: or_if
+    - token: ";"
+      node: Sequence
+      connective: sequence
+  redirections:
+    - token: "<"
+      stream: stdin
+      mode: read
+    - token: ">"
+      stream: stdout
+      mode: truncate
+    - token: ">>"
+      stream: stdout
+      mode: append
+    - token: "2>"
+      stream: stderr
+      mode: truncate
+    - token: "2>>"
+      stream: stderr
+      mode: append
+---
