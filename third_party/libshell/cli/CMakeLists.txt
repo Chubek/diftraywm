@@ -7,6 +7,7 @@ endif()
 set(LIBSH_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 
 add_library(libsh_cli_parse OBJECT
+    lsh-lex.cpp
     libsh-parse.cpp
 )
 target_link_libraries(libsh_cli_parse PUBLIC libshell::libshell)

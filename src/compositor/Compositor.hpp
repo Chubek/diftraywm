@@ -7,19 +7,26 @@
 #include "config/Config.hpp"
 #include "input/KeyboardHandler.hpp"
 #include "help/HelpPager.hpp"
+#include "keymap/Keymap.hpp"
 #include "nterm/NTermRenderer.hpp"
+#include "compositor/WaylandRuntime.h"
 
 #include <memory>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 struct wl_display;
 struct wl_event_source;
 struct wlr_xdg_toplevel;
+struct xkb_context;
+struct xkb_keymap;
+struct xkb_state;
 struct diftray_wayland_runtime;
 struct diftray_cell_surface;
+struct diftray_wayland_style;
 
 class View;
 class Cell;
@@ -33,6 +40,7 @@ class PluginManager;
 class LuaEngine;
 class NoteletCatalog;
 class Notelet;
+class ControlServer;
 
 struct WlDisplayDeleter {
   void operator()(wl_display *ptr) const noexcept;
@@ -52,6 +60,11 @@ public:
   void set_active_view(View *view);
   std::string spawn_cell(bool above);
   std::string kill_selected_cell();
+  std::string mux_split(bool vertical);
+  std::string mux_focus(const std::string &direction);
+  std::string mux_kill();
+  std::string mux_zoom();
+  std::string mux_list() const;
   std::string move_selected_cell(int delta);
   std::string move_cell(const std::string &id, const std::string &destination);
   std::string move_cursor(const std::string &id, const std::string &kind, const std::string &destination);
@@ -71,6 +84,29 @@ public:
   std::string apply_theme_css(const std::string &css);
   std::string load_theme_file(const std::string &path);
   std::string launch_program(const std::string &command);
+  // Session lifecycle driven by diftrayctl.
+  std::string request_exit();
+  std::string request_restart();
+  std::string session_status() const;
+  bool restart_requested() const { return restart_requested_; }
+  // Launcher taskbar. Locked, the bar stays pinned under the status bar and
+  // paints above cells and graphical windows; unlocked, it appears only while
+  // the launcher input has focus.
+  bool launcher_locked() const { return launcher_locked_; }
+  std::string toggle_launcher_lock();
+  std::string launcher_status() const;
+  std::string launcher_tasks() const;
+  // Extension, plugin, config and script control.
+  std::string load_plugin(const std::string &path);
+  std::string unload_plugin(const std::string &path);
+  std::string list_plugins() const;
+  std::string exec_extension(const std::string &path);
+  std::string list_extensions() const;
+  std::string config_file() const { return config_path_.empty() ? "(none)" : config_path_; }
+  std::string open_config();
+  std::string reload_config();
+  std::string source_script(const std::string &path);
+  const std::string &control_socket() const;
   std::string list_notelets() const;
   std::string open_notelet(const std::string &id);
   std::string close_notelet();
@@ -135,6 +171,10 @@ private:
   void update_chrome();
   void watch_cell_pty(Cell *cell);
   void unwatch_cell_pty(Cell *cell);
+  bool install_control_socket();
+  void remove_control_socket();
+  // Returns whether the command was accepted, plus the status line to report.
+  std::pair<bool, std::string> run_control_command(const std::string &command);
   static int terminal_fd_ready(int fd, uint32_t mask, void *data);
   static bool terminal_key_received(void *userdata, uint32_t keysym,
                                     uint32_t modifiers, uint32_t state,
@@ -159,6 +199,36 @@ private:
   void open_command_bar(CommandScope scope, const std::string &prefix);
   void close_command_bar();
   bool feed_command_bar_key(uint32_t keysym, uint32_t unicode);
+  std::string meta_prefix_spec() const;
+  // Matches the Meta prefix chord. `keycode` is the XKB key code, which the
+  // keymap's own evdev-based chords are compared against; it is needed because
+  // the keymap spells chords as a key code plus modifier bits, not as a
+  // keysym.
+  bool match_meta_prefix(uint32_t keysym, uint32_t modifiers, uint32_t keycode) const;
+  // The seat's keymap and state, needed to turn an evdev key code into a
+  // keysym. Null before a seat exists (headless tests, early startup).
+  struct xkb_keymap *seat_keymap() const;
+  struct xkb_state *seat_state() const;
+
+public:
+  // The keymap subsystem. load_keymap() resolves config_.keymap relative to the
+  // config file and reports a parse error without refusing to start, so the
+  // built-in keys stay in force. It is also reachable from `keymap reload`.
+  bool load_keymap(std::string &error);
+  const Keymap &keymap() const { return keymap_; }
+  const std::string &keymap_error() const { return keymap_error_; }
+  std::string keymap_info() const;
+  // Applies the active keymap profile to one key press. Returns true when the
+  // keymap consumed the event, so the built-in bindings are skipped.
+  bool apply_keymap(uint32_t keysym, uint32_t modifiers, uint32_t keycode);
+  void keymap_select_profile(const std::string &name);
+  void keymap_reset_profile();
+  // Types text into the focused cell's terminal, for a keymap's Typeout().
+  std::string type_out_text(const std::string &text);
+  void set_launcher_locked(bool locked);
+  void refresh_launcher_bar();
+  // Projects config_ onto the runtime style struct (init, theme, reload).
+  diftray_wayland_style wayland_style() const;
 
   static constexpr int kMinWorkspace = 1;
   static constexpr int kMaxWorkspace = 10;
@@ -192,8 +262,21 @@ private:
   std::unordered_map<int, Cell *> pty_cells_;
   std::unordered_map<int, wl_event_source *> pty_sources_;
   std::string wayland_socket_;
+  std::string config_path_;
   diftray_wayland_runtime *wayland_runtime_ = nullptr;
   CompositorConfig config_;
+  std::unique_ptr<ControlServer> control_server_;
+  bool restart_requested_ = false;
+  bool exit_requested_ = false;
+  bool meta_prefix_pending_ = false;
+  // The parsed keymap INI and the profile it is currently in. An empty
+  // keymap_ means the built-in keys are in force, which is also the state
+  // after a failed load so a bad INI never locks the user out.
+  Keymap keymap_;
+  std::string keymap_error_;
+  std::string keymap_profile_;
+  // Guards Remap() against a cycle in the keymap's own redirect graph.
+  bool keymap_remap_guard_ = false;
   std::map<std::string, Output> outputs_{{"default", Output{OutputGeometry{"default"}}}};
   std::string active_output_ = "default";
   std::string rendering_output_;
@@ -203,6 +286,7 @@ private:
   int output_height_ = 720;
   bool command_bar_open_ = false;
   bool launcher_mode_ = false;
+  bool launcher_locked_ = false;
   bool help_pager_active_ = false;
   bool help_search_open_ = false;
   std::string help_search_input_;

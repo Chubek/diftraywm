@@ -10,6 +10,9 @@ public:
   ~PluginManager();
   bool discover();
   bool load(const std::string &path);
+  // Unloads a single plugin, running its cleanup and dropping the commands it
+  // registered. Unknown or already-unloaded paths fail.
+  bool unload(const std::string &path);
   void unload_all();
   void notify(const std::string &event);
   const std::vector<std::string> &loaded() const;

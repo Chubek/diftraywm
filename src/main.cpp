@@ -1,9 +1,20 @@
 #include "compositor/Compositor.hpp"
 
+#include <unistd.h>
+
+#include <cerrno>
+#include <csignal>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
+#include <vector>
 
 namespace {
+
 void print_help(const char *program) {
   std::cout << "Usage: " << program << " [--command COMMAND] [--help] [--version]\n"
             << "\n"
@@ -23,9 +34,56 @@ void print_help(const char *program) {
             << "  Meta+F1-F4      quick restore GCursor\n"
             << "  Meta+Left/Right cycle tabs\n"
             << "  Meta+1-9        switch workspace\n"
-            << "  Meta+0          workspace 10\n";
+            << "  Meta+0          workspace 10\n"
+            << "  Meta+S/V/O/P/Z  multiplexer split, focus and zoom\n"
+            << "\n"
+            << "Meta also responds to the Ctrl+Q prefix chord; see CONFIGURATION.md.\n"
+            << "Run `diftrayctl --help` to drive this session from a shell.\n";
 }
+
+// Re-executes the compositor in place for `session restart`. Reading the
+// original argv from /proc keeps every flag and environment the session was
+// started with, and exec leaves the PID (and any session supervisor) intact.
+[[noreturn]] void restart_self() {
+  std::error_code error;
+  const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+  std::vector<std::string> arguments;
+  {
+    std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
+    std::string raw((std::istreambuf_iterator<char>(cmdline)),
+                    std::istreambuf_iterator<char>());
+    std::string current;
+    for (const char ch : raw) {
+      if (ch == '\0') {
+        if (!current.empty()) arguments.push_back(current);
+        current.clear();
+      } else {
+        current.push_back(ch);
+      }
+    }
+    if (!current.empty()) arguments.push_back(current);
+  }
+  if (error || executable.empty() || arguments.empty()) {
+    std::cerr << "restart failed: cannot recover the compositor command line\n";
+    std::_Exit(70);
+  }
+  std::vector<char *> argv;
+  argv.reserve(arguments.size() + 1);
+  for (auto &argument : arguments) {
+    argv.push_back(argument.data());
+  }
+  argv.push_back(nullptr);
+  // Restore the default disposition in case a caught signal left one ignored,
+  // otherwise the restarted compositor would silently drop SIGTERM.
+  ::signal(SIGINT, SIG_DFL);
+  ::signal(SIGTERM, SIG_DFL);
+  ::signal(SIGCHLD, SIG_DFL);
+  ::execv(executable.c_str(), argv.data());
+  std::cerr << "restart failed: " << std::strerror(errno) << '\n';
+  std::_Exit(70);
 }
+
+}  // namespace
 
 int main(int argc, char **argv) {
   std::string command;
@@ -64,7 +122,15 @@ int main(int argc, char **argv) {
     }
     compositor.flush_extension_commands();
     std::cout << compositor.command_bar().status_line() << '\n';
+    // A one-shot command such as `session restart` still has to take effect.
+    if (compositor.restart_requested()) {
+      restart_self();
+    }
     return 0;
   }
-  return compositor.run();
+  const int result = compositor.run();
+  if (compositor.restart_requested()) {
+    restart_self();
+  }
+  return result;
 }

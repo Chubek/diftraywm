@@ -1,5 +1,7 @@
 #include "compositor/Compositor.hpp"
+#include "compositor/ControlServer.hpp"
 #include "compositor/WaylandRuntime.h"
+#include "ctl/ControlSocketPath.hpp"
 
 #include "nterm/NTerm.hpp"
 #include "notelet/Notelet.hpp"
@@ -12,6 +14,7 @@
 #include "views/TCursorView.hpp"
 #include "views/View.hpp"
 
+#include <domterm.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -53,10 +56,97 @@ bool theme_pixels(const std::string &value, int &out) {
   auto result = std::from_chars(value.data(), value.data() + value.size() - 2, out);
   return result.ec == std::errc() && result.ptr == value.data() + value.size() - 2 && out > 0;
 }
+
+// Modifier bits that participate in binding matches; Caps Lock and Num Lock
+// are masked out, mirroring the configuration program's binding matching.
+constexpr uint32_t kBindingMods =
+    WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT |
+    WLR_MODIFIER_MOD3 | WLR_MODIFIER_LOGO | WLR_MODIFIER_MOD5;
+
+uint32_t prefix_modifier_bit(const std::string &name) {
+  if (name == "Meta" || name == "Super") return WLR_MODIFIER_LOGO;
+  if (name == "Ctrl") return WLR_MODIFIER_CTRL;
+  if (name == "Shift") return WLR_MODIFIER_SHIFT;
+  if (name == "Alt") return WLR_MODIFIER_ALT;
+  if (name == "Mod3") return WLR_MODIFIER_MOD3;
+  if (name == "Mod5") return WLR_MODIFIER_MOD5;
+  return 0;
+}
+
+// Bridges the keymap subsystem's own modifier bits to and from libinput's, so
+// one chord in the INI means the same thing whether the compositor matches it
+// against a key event or the evdev backend matches it against an input_event.
+uint32_t wlr_mods(uint32_t keymap_mods) {
+  uint32_t mods = 0;
+  if (keymap_mods & kModShift) mods |= WLR_MODIFIER_SHIFT;
+  if (keymap_mods & kModCtrl) mods |= WLR_MODIFIER_CTRL;
+  if (keymap_mods & kModAlt) mods |= WLR_MODIFIER_ALT;
+  if (keymap_mods & kModLogo) mods |= WLR_MODIFIER_LOGO;
+  // The keymap spells Meta as AltGr, which libinput reports as Mod3.
+  if (keymap_mods & kModMeta) mods |= WLR_MODIFIER_MOD3;
+  return mods;
+}
+
+uint32_t keymap_mods(uint32_t wlr_modifier) {
+  uint32_t mods = kModNone;
+  if (wlr_modifier & WLR_MODIFIER_SHIFT) mods |= kModShift;
+  if (wlr_modifier & WLR_MODIFIER_CTRL) mods |= kModCtrl;
+  if (wlr_modifier & WLR_MODIFIER_ALT) mods |= kModAlt;
+  if (wlr_modifier & WLR_MODIFIER_LOGO) mods |= kModLogo;
+  if (wlr_modifier & WLR_MODIFIER_MOD3) mods |= kModMeta;
+  return mods;
+}
+
+// Parses a Meta-prefix chord spec such as "Ctrl+Q": one or more modifiers
+// followed by a single key name. Returns false when the spec is malformed.
+bool parse_meta_chord(const std::string &spec, uint32_t &mods, uint32_t &keysym) {
+  mods = 0;
+  keysym = 0;
+  std::size_t start = 0;
+  std::vector<std::string> parts;
+  for (std::size_t i = 0; i <= spec.size(); ++i) {
+    if (i == spec.size() || spec[i] == '+') {
+      parts.push_back(spec.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  if (parts.size() < 2) {
+    return false;
+  }
+  for (std::size_t i = 0; i + 1 < parts.size(); ++i) {
+    const uint32_t bit = prefix_modifier_bit(parts[i]);
+    if (bit == 0 || (mods & bit) != 0) {
+      return false;
+    }
+    mods |= bit;
+  }
+  const uint32_t sym =
+      xkb_keysym_from_name(parts.back().c_str(), XKB_KEYSYM_NO_FLAGS);
+  if (sym == XKB_KEY_NoSymbol) {
+    return false;
+  }
+  keysym = sym;
+  return true;
+}
+
+bool chord_keysym_matches(uint32_t pressed, uint32_t spec) {
+  if (pressed == spec) {
+    return true;
+  }
+  // A single-letter chord key matches either shift state (q vs Q).
+  if (spec >= 'a' && spec <= 'z') {
+    return pressed == spec - ('a' - 'A');
+  }
+  if (spec >= 'A' && spec <= 'Z') {
+    return pressed == spec + ('a' - 'A');
+  }
+  return false;
+}
 }
 
 Compositor::~Compositor() {
   stop();
+  remove_control_socket();
   if (notelet_timer_) wl_event_source_remove(notelet_timer_);
   for (auto *source : signal_sources_) if (source) wl_event_source_remove(source);
   notelet_cells_.clear();
@@ -97,6 +187,9 @@ bool Compositor::init() {
     }
     if (!config_path.empty() && !load_compositor_config(config_path.string(), config_, status_line_)) return false;
   }
+  if (!config_path.empty()) {
+    config_path_ = config_path.string();
+  }
   if (!config_.theme.empty() && std::filesystem::path(config_.theme).is_relative()) {
     config_.theme = (config_path.parent_path() / config_.theme).lexically_normal().string();
   }
@@ -106,9 +199,16 @@ bool Compositor::init() {
   help_pager_.set_search_path(config_.help_path.empty()
       ? (config_path.parent_path() / "help").string() + ":" + DIFTRAY_HELP_DEFAULT_PATH
       : config_.help_path);
+  // A bad keymap is reported but not fatal: the built-in keys stay in force, so
+  // a typo in the INI cannot lock the user out of their own session.
+  if (!config_.keymap.empty() && !load_keymap(status_line_)) {
+    keymap_error_ = status_line_;
+  }
   if (!config_.word_pool.empty()) {
     setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 0);
   }
+  // The launcher starts locked exactly when the configuration asks for it.
+  launcher_locked_ = config_.launcher_locked;
 
   ncursor_views_.push_back(std::make_unique<NCursorView>());
   ncursor_views_.back()->set_id("primary");
@@ -189,17 +289,7 @@ bool Compositor::init() {
   }
   wayland_socket_ = registered_socket;
 
-  diftray_wayland_style style{
-      config_.border_size,
-      config_.command_bar_height,
-      config_.status_bar_height,
-      {config_.border_color[0], config_.border_color[1], config_.border_color[2],
-       config_.border_color[3]},
-      {config_.background_color[0], config_.background_color[1],
-       config_.background_color[2], config_.background_color[3]},
-      {config_.command_bar_color[0], config_.command_bar_color[1],
-       config_.command_bar_color[2], config_.command_bar_color[3]},
-      {1.0f, 0.72f, 0.18f, 1.0f}};
+  const diftray_wayland_style style = wayland_style();
   wayland_runtime_ = diftray_wayland_runtime_create(display_.get(), &style);
   if (!wayland_runtime_) {
     status_line_ = "failed to initialize wlroots runtime";
@@ -237,6 +327,9 @@ bool Compositor::init() {
     attach_cell_surface(cell.get());
   }
   setenv("WAYLAND_DISPLAY", wayland_socket_.c_str(), 1);
+  // The control socket is a convenience, not a prerequisite: a session without
+  // it still runs, it just cannot be driven by diftrayctl.
+  install_control_socket();
   status_line_ = "ncursor ready";
   update_chrome();
   return true;
@@ -268,6 +361,9 @@ int Compositor::run() {
 
 void Compositor::stop() {
   running_ = false;
+  // Connections are served on the same event loop that is about to stop, so
+  // drop them before the display tears down the loop's sources.
+  if (control_server_) control_server_->stop();
   for (auto &entry : pty_sources_) {
     if (entry.second) {
       wl_event_source_remove(entry.second);
@@ -544,19 +640,27 @@ void Compositor::update_chrome() {
   if (!status_line_.empty()) {
     chrome += "  |  " + status_line_;
   }
+  if (meta_prefix_pending_) {
+    chrome += "  |  prefix " + meta_prefix_spec();
+  }
   diftray_wayland_runtime_set_status_line(wayland_runtime_, chrome.c_str());
-  if (command_bar_open_ || help_search_open_) {
+  // The launcher lives in the top taskbar, not the bottom command bar, so the
+  // two never overlap and the launcher keeps a stable place on screen.
+  if (launcher_mode_) {
+    diftray_wayland_runtime_set_command_bar(wayland_runtime_, false, "");
+  } else if (command_bar_open_ || help_search_open_) {
     std::string prompt;
     if (help_search_open_) {
       prompt = "/" + help_search_input_;
     } else {
-      prompt = launcher_mode_ ? "launch> " : (command_bar_.scope == CommandScope::NCURSOR_GLOBAL ? "global: " : ":");
+      prompt = command_bar_.scope == CommandScope::NCURSOR_GLOBAL ? "global: " : ":";
       prompt += command_bar_.input_buffer;
     }
     diftray_wayland_runtime_set_command_bar(wayland_runtime_, true, prompt.c_str());
   } else {
     diftray_wayland_runtime_set_command_bar(wayland_runtime_, false, "");
   }
+  refresh_launcher_bar();
 }
 
 void Compositor::layout_current_output() {
@@ -564,10 +668,12 @@ void Compositor::layout_current_output() {
   if (!ncursor) {
     return;
   }
-  int usable_height = output_height_ - config_.status_bar_height;
-  if (active_output_ == rendering_output_ && (command_bar_open_ || help_search_open_)) {
-    usable_height -= config_.command_bar_height;
-  }
+  // The command bar and help search draw as a Wayland overlay on top of the
+  // cells. Their height is deliberately NOT subtracted here: shrinking the
+  // cells would resize their PTYs, scrolling terminal content (including the
+  // shell prompt and any half-typed line) into scrollback every time `:` is
+  // pressed and leaving blank rows behind when the bar closes.
+  const int usable_height = output_height_ - config_.status_bar_height;
   const auto workspace_views = ncursors_on_workspace(current_workspace_);
   if (tcursor_view_ && active_view_ == tcursor_view_.get() &&
       tcursor_workspace_ == current_workspace_ && active_cell()) {
@@ -748,6 +854,218 @@ unsigned int Compositor::tsm_mods(uint32_t modifiers) const {
   return mods;
 }
 
+// The compositor's Meta prefix. The keymap INI is the authority, because the
+// user asked for every key to live there; the config program's `prefix`
+// variable and the built-in Ctrl+Q remain as fallbacks for a session with no
+// INI, so removing the file does not lock anyone out.
+// The seat's keymap and state, for Remap(). Both are null before a seat
+// exists, which is the normal state in the headless tests.
+struct xkb_keymap *Compositor::seat_keymap() const {
+  return wayland_runtime_ ? diftray_wayland_runtime_seat_keymap(wayland_runtime_) : nullptr;
+}
+
+struct xkb_state *Compositor::seat_state() const {
+  return wayland_runtime_ ? diftray_wayland_runtime_seat_state(wayland_runtime_) : nullptr;
+}
+
+std::string Compositor::meta_prefix_spec() const {
+  KeyChord prefix;
+  if (keymap_.meta_prefix_chord(prefix)) {
+    return prefix.str();
+  }
+  if (config_.program) {
+    const auto &variables = config_.program->variables();
+    if (const auto it = variables.find("prefix"); it != variables.end()) {
+      if (const auto *text = std::get_if<std::string>(&it->second)) {
+        uint32_t mods = 0, sym = 0;
+        if (parse_meta_chord(*text, mods, sym)) {
+          return *text;
+        }
+      }
+    }
+  }
+  return "Ctrl+Q";
+}
+
+bool Compositor::load_keymap(std::string &error) {
+  error.clear();
+  keymap_ = Keymap{};
+  keymap_error_.clear();
+  if (config_.keymap.empty()) {
+    keymap_profile_.clear();
+    return true;
+  }
+  // Relative paths resolve against the config file's directory, the same rule
+  // the theme and help paths already use, so a config directory stays
+  // self-contained.
+  std::filesystem::path path(config_.keymap);
+  if (path.is_relative() && !config_path_.empty()) {
+    path = std::filesystem::path(config_path_).parent_path() / path;
+  }
+  path = path.lexically_normal();
+  // Qualified: the member function shadows the free function of the same name.
+  if (!::load_keymap(path.string(), keymap_, error)) {
+    keymap_error_ = error;
+    keymap_ = Keymap{};
+    keymap_profile_.clear();
+    return false;
+  }
+  keymap_profile_ = keymap_.default_profile;
+  return true;
+}
+
+void Compositor::keymap_select_profile(const std::string &name) {
+  std::string error;
+  if (keymap_.profile_named(name, error)) {
+    keymap_profile_ = name;
+  } else {
+    status_line_ = error;
+  }
+}
+
+void Compositor::keymap_reset_profile() {
+  keymap_profile_ = keymap_.default_profile;
+  status_line_ = "keymap profile: " + keymap_profile_;
+}
+
+std::string Compositor::keymap_info() const {
+  if (!keymap_error_.empty()) {
+    return "keymap: " + keymap_error_ + " (built-in keys in force)";
+  }
+  if (keymap_.empty()) {
+    return "keymap: none loaded (" +
+           (config_.keymap.empty() ? std::string("no keymap configured")
+                                   : config_.keymap) +
+           ")";
+  }
+  std::string out = keymap_.summary();
+  out += "active profile: " + (keymap_profile_.empty() ? "(none)" : keymap_profile_) + "\n";
+  out += keymap_.describe_bindings();
+  return out;
+}
+
+bool Compositor::apply_keymap(uint32_t keysym, uint32_t modifiers, uint32_t keycode) {
+  if (keymap_.empty()) {
+    return false;
+  }
+  // The evdev backend and the compositor agree on chord identity: the kernel
+  // key code is the XKB key code minus the eight keys libxkbcommon reserves,
+  // and the modifier bits are the same set libinput reports.
+  KeyChord chord;
+  chord.code = keycode >= 8 ? keycode - 8 : 0;
+  chord.mods = keymap_mods(modifiers);
+  if (chord.code == 0) {
+    return false;
+  }
+  // The [init] prefix switches profile and is swallowed, so it never reaches
+  // the terminal. Its release is swallowed too, or the character would appear
+  // when the user let go.
+  if (keymap_.prefix.code == chord.code && keymap_.prefix.mods == chord.mods) {
+    if (keymap_.prefix_action.kind == Action::Kind::trigger) {
+      keymap_select_profile(keymap_.prefix_action.profile);
+    }
+    return true;
+  }
+  const Action *action = keymap_.lookup(keymap_profile_, chord);
+  if (!action) {
+    return false;
+  }
+  switch (action->kind) {
+    case Action::Kind::ignore:
+      return true;
+    case Action::Kind::trigger:
+      keymap_select_profile(action->profile);
+      return true;
+    case Action::Kind::diftray: {
+      // Anything a user can type after `:` is available here, which is what
+      // AGENTS.md section 12.4 asks of every compositor action.
+      const bool ok = command_bar_.dispatch(action->text);
+      status_line_ = ok ? "keymap: " + action->text
+                        : "keymap: " + action->text + " rejected: " +
+                              command_bar_.status_line();
+      return true;
+    }
+    case Action::Kind::exec: {
+      // The same path `launch` uses, so a keymap-launched program inherits the
+      // session's WAYLAND_DISPLAY and is tracked in launched_pids_.
+      status_line_ = launch_program(action->text);
+      return true;
+    }
+    case Action::Kind::typeout: {
+      status_line_ = type_out_text(action->text);
+      return true;
+    }
+    case Action::Kind::remap: {
+      // A remap redirects the chord: the target is looked up with the same
+      // rules as any other key, so a profile can rewrite <C-q> into a Meta
+      // binding. The translation needs a keysym, which only the seat's state can
+      // supply, so without one the key is swallowed rather than guessed at. The
+      // guard makes a remap cycle terminate instead of recursing.
+      if (keymap_remap_guard_ || !seat_keymap() || !seat_state()) {
+        return true;
+      }
+      const xkb_keycode_t target_code = action->chord.code + 8;
+      const xkb_keysym_t target_sym = xkb_state_key_get_one_sym(seat_state(), target_code);
+      if (target_sym == XKB_KEY_NoSymbol) {
+        return true;
+      }
+      keymap_remap_guard_ = true;
+      struct Guard {
+        bool *flag;
+        ~Guard() { *flag = false; }
+      } guard{&keymap_remap_guard_};
+      // xkb_state_key_get_utf8 writes into a caller-supplied buffer, so ask for
+      // the target character the same way the input path does: a remap that
+      // reaches a printable key must still type it.
+      char utf8[7] = {};
+      xkb_state_key_get_utf8(seat_state(), target_code, utf8, sizeof(utf8));
+      handle_key(target_sym, wlr_mods(action->chord.mods),
+                 WL_KEYBOARD_KEY_STATE_PRESSED,
+                 utf8[0] ? static_cast<uint32_t>(static_cast<unsigned char>(utf8[0])) : 0,
+                 target_code);
+      return true;
+    }
+    case Action::Kind::none:
+      break;
+  }
+  return false;
+}
+
+bool Compositor::match_meta_prefix(uint32_t keysym, uint32_t modifiers,
+                                  uint32_t keycode) const {
+  // The keymap's [meta] prefix is the authority when it sets one, and it spells
+  // chords as a key code plus modifier bits -- so compare those directly.
+  // Routing the INI's "C-q" through the legacy "Ctrl+Q" string parser below
+  // would never match, because that parser splits on '+' and needs a separate
+  // key name.
+  KeyChord prefix;
+  if (keymap_.meta_prefix_chord(prefix)) {
+    if (prefix.mods != keymap_mods(modifiers)) {
+      return false;
+    }
+    if (keycode >= 8 && keycode - 8 == prefix.code) {
+      return true;
+    }
+    // Without a usable key code -- headless tests, or a key event that arrived
+    // before the seat had one -- ask the seat's keymap what the prefix key
+    // produces and compare keysyms. With no seat there is nothing to compare
+    // against, and refusing is the safe answer: a false positive would arm the
+    // prefix on an unrelated key.
+    if (seat_keymap() && seat_state()) {
+      return xkb_state_key_get_one_sym(seat_state(), prefix.code + 8) == keysym;
+    }
+    return false;
+  }
+  uint32_t mods = 0, sym = 0;
+  if (!parse_meta_chord(meta_prefix_spec(), mods, sym)) {
+    return false;
+  }
+  if ((modifiers & kBindingMods) != mods) {
+    return false;
+  }
+  return chord_keysym_matches(keysym, sym);
+}
+
 void Compositor::open_command_bar(CommandScope scope, const std::string &prefix) {
   command_bar_open_ = true;
   launcher_mode_ = prefix == "launch";
@@ -797,14 +1115,14 @@ bool Compositor::feed_help_search_key(uint32_t keysym, uint32_t unicode) {
 }
 
 bool Compositor::handle_help_pager_key(uint32_t keysym, uint32_t unicode) {
-  if (keysym == XKB_KEY_Escape || help_key_matches(config_.help_key_close, keysym, unicode)) {
+  if (keysym == XKB_KEY_Escape || help_key_matches(keymap_.help_key_close, keysym, unicode)) {
     help_pager_active_ = false;
     help_search_open_ = false;
     status_line_ = "help closed";
     relayout();
     return true;
   }
-  if (help_key_matches(config_.help_key_search, keysym, unicode)) {
+  if (help_key_matches(keymap_.help_key_search, keysym, unicode)) {
     help_search_open_ = true;
     help_search_input_.clear();
     relayout();
@@ -815,17 +1133,17 @@ bool Compositor::handle_help_pager_key(uint32_t keysym, uint32_t unicode) {
   const std::size_t rows = active_cell() && active_cell()->nterm()
                                ? active_cell()->nterm()->rows()
                                : 24;
-  if (help_key_matches(config_.help_key_next, keysym, unicode)) {
+  if (help_key_matches(keymap_.help_key_next, keysym, unicode)) {
     changed = help_pager_.next_match(message);
-  } else if (help_key_matches(config_.help_key_previous, keysym, unicode)) {
+  } else if (help_key_matches(keymap_.help_key_previous, keysym, unicode)) {
     changed = help_pager_.previous_match(message);
-  } else if (help_key_matches(config_.help_key_page_down, keysym, unicode)) {
+  } else if (help_key_matches(keymap_.help_key_page_down, keysym, unicode)) {
     changed = help_pager_.scroll_pages(1, rows > 1 ? rows - 1 : 1, message);
-  } else if (help_key_matches(config_.help_key_page_up, keysym, unicode)) {
+  } else if (help_key_matches(keymap_.help_key_page_up, keysym, unicode)) {
     changed = help_pager_.scroll_pages(-1, rows > 1 ? rows - 1 : 1, message);
-  } else if (help_key_matches(config_.help_key_line_down, keysym, unicode) || keysym == XKB_KEY_Down) {
+  } else if (help_key_matches(keymap_.help_key_line_down, keysym, unicode) || keysym == XKB_KEY_Down) {
     changed = help_pager_.scroll_lines(1, rows > 1 ? rows - 1 : 1, message);
-  } else if (help_key_matches(config_.help_key_line_up, keysym, unicode) || keysym == XKB_KEY_Up) {
+  } else if (help_key_matches(keymap_.help_key_line_up, keysym, unicode) || keysym == XKB_KEY_Up) {
     changed = help_pager_.scroll_lines(-1, rows > 1 ? rows - 1 : 1, message);
   } else {
     return true;
@@ -881,23 +1199,40 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     update_chrome();
     return true;
   }
-  const bool meta = (modifiers & WLR_MODIFIER_LOGO) != 0;
-  if (meta && keysym == XKB_KEY_Escape) {
+  const uint32_t real_mods = modifiers;
+  const bool real_meta = (real_mods & WLR_MODIFIER_LOGO) != 0;
+  if (meta_prefix_pending_ && keysym == XKB_KEY_Escape && !real_meta) {
+    meta_prefix_pending_ = false;
+    status_line_ = "prefix cancelled";
+    update_chrome();
+    return true;
+  }
+  if (real_meta && keysym == XKB_KEY_Escape) {
     stop();
     return true;
   }
   if (help_search_open_) {
     return feed_help_search_key(keysym, unicode);
   }
-  if (command_bar_open_ && !(meta && keysym == XKB_KEY_colon)) {
+  if (command_bar_open_ && !(real_meta && keysym == XKB_KEY_colon)) {
     return feed_command_bar_key(keysym, unicode);
+  }
+  // An armed Meta prefix (Ctrl+Q by default) lends the Logo modifier to this
+  // keypress only. The flag is consumed here no matter how the key is
+  // handled below; arming afresh happens after the binding lookup.
+  uint32_t mods = real_mods;
+  bool meta = real_meta;
+  if (meta_prefix_pending_) {
+    mods |= WLR_MODIFIER_LOGO;
+    meta = true;
+    meta_prefix_pending_ = false;
   }
   if (config_.program && !(help_pager_active_ && !meta)) {
     // Physical bindings take precedence when both match the same event.
     for (bool physical : {true, false}) {
       for (const auto &binding : config_.program->bindings()) {
         if (std::holds_alternative<ConfigKeycode>(binding.key) != physical ||
-            !binding.matches(keysym, keycode, modifiers)) continue;
+            !binding.matches(keysym, keycode, mods)) continue;
         const auto saved_scope = command_bar_.scope;
         command_bar_.scope = binding.global ? CommandScope::NCURSOR_GLOBAL : CommandScope::CELL;
         for (const auto &command : binding.commands)
@@ -908,6 +1243,24 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
         return true;
       }
     }
+  }
+  // The prefix chord itself arms Meta for the next key unless a binding above
+  // consumed it. Pressing the chord twice in a row stays armed. This is checked
+  // before the keymap profiles so a profile cannot consume the chord the Meta
+  // prefix needs, and after the config program's `bind()` entries so an explicit
+  // binding still wins.
+  if (match_meta_prefix(keysym, real_mods, keycode)) {
+    meta_prefix_pending_ = true;
+    status_line_ = "prefix " + meta_prefix_spec() + " (Meta) - next key";
+    update_chrome();
+    return true;
+  }
+  // Then the keymap INI, so a profile can redefine any built-in binding. It
+  // runs last of the three because the two above are more specific: a binding
+  // the user wrote down, and the chord that makes Meta reachable at all.
+  if (apply_keymap(keysym, real_mods, keycode)) {
+    update_chrome();
+    return true;
   }
   if (meta && (keysym == XKB_KEY_colon || keysym == XKB_KEY_semicolon)) {
     open_command_bar(CommandScope::NCURSOR_GLOBAL, "");
@@ -927,6 +1280,45 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
   if (meta && keysym == XKB_KEY_Tab) {
     toggle_cell_select_mode();
     relayout();
+    return true;
+  }
+  // Multiplexer focus with an extra Ctrl takes precedence over the plain
+  // Meta+arrow bindings below (tab cycling and cell reordering).
+  const bool ctrl = (mods & WLR_MODIFIER_CTRL) != 0;
+  if (meta && ctrl && (keysym == XKB_KEY_Up || keysym == XKB_KEY_KP_Up)) {
+    status_line_ = mux_focus("up");
+    return true;
+  }
+  if (meta && ctrl && (keysym == XKB_KEY_Down || keysym == XKB_KEY_KP_Down)) {
+    status_line_ = mux_focus("down");
+    return true;
+  }
+  if (meta && ctrl && (keysym == XKB_KEY_Left || keysym == XKB_KEY_KP_Left)) {
+    status_line_ = mux_focus("left");
+    return true;
+  }
+  if (meta && ctrl && (keysym == XKB_KEY_Right || keysym == XKB_KEY_KP_Right)) {
+    status_line_ = mux_focus("right");
+    return true;
+  }
+  if (meta && (keysym == XKB_KEY_s || keysym == XKB_KEY_S)) {
+    status_line_ = mux_split(false);
+    return true;
+  }
+  if (meta && (keysym == XKB_KEY_v || keysym == XKB_KEY_V)) {
+    status_line_ = mux_split(true);
+    return true;
+  }
+  if (meta && (keysym == XKB_KEY_o || keysym == XKB_KEY_O)) {
+    status_line_ = mux_focus("next");
+    return true;
+  }
+  if (meta && (keysym == XKB_KEY_p || keysym == XKB_KEY_P)) {
+    status_line_ = mux_focus("prev");
+    return true;
+  }
+  if (meta && (keysym == XKB_KEY_z || keysym == XKB_KEY_Z)) {
+    status_line_ = mux_zoom();
     return true;
   }
   if (meta && keysym == XKB_KEY_Up) {
@@ -1057,7 +1449,7 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
       }
       return true;
     }
-    cell->nterm()->handle_key(keysym, keysym < 128 ? keysym : 0, tsm_mods(modifiers),
+    cell->nterm()->handle_key(keysym, keysym < 128 ? keysym : 0, tsm_mods(real_mods),
                               unicode);
     if (auto source = pty_sources_.find(cell->nterm()->master_fd()); source != pty_sources_.end())
       wl_event_source_fd_update(source->second, WL_EVENT_READABLE |
@@ -1246,6 +1638,104 @@ std::string Compositor::erase_cell(Cell *cell) {
 }
 
 std::string Compositor::kill_selected_cell() { return erase_cell(active_cell()); }
+
+std::string Compositor::mux_split(bool vertical) {
+  if (!ncursor_view()) {
+    return "split failed: no ncursor view";
+  }
+  cells_.push_back(std::make_unique<Cell>(ncursor_view()->default_shell().empty() ? config_.shell : ncursor_view()->default_shell()));
+  auto *cell = cells_.back().get();
+  const bool inserted =
+      vertical ? ncursor_view()->split_stack(cell) : ncursor_view()->insert_cell(cell, false);
+  if (!inserted) {
+    cells_.pop_back();
+    return "split failed: could not insert cell";
+  }
+  attach_cell_surface(cell);
+  if (display_ && cell->nterm()) {
+    cell->nterm()->start();
+    watch_cell_pty(cell);
+  }
+  relayout();
+  rebuild_command_context();
+  return std::string("split cell ") + cell->id() + (vertical ? " vertical" : " horizontal");
+}
+
+std::string Compositor::mux_focus(const std::string &direction) {
+  auto *view = ncursor_view();
+  if (!view) {
+    return "focus failed: no ncursor view";
+  }
+  bool moved = false;
+  if (direction == "next") {
+    moved = view->focus_next_cell();
+  } else if (direction == "prev" || direction == "previous") {
+    moved = view->focus_prev_cell();
+  } else if (direction == "up") {
+    moved = view->focus_up_cell();
+  } else if (direction == "down") {
+    moved = view->focus_down_cell();
+  } else if (direction == "left") {
+    moved = view->focus_left_cell();
+  } else if (direction == "right") {
+    moved = view->focus_right_cell();
+  } else {
+    return "mux focus requires next, prev, up, down, left, or right";
+  }
+  if (!moved) {
+    if (direction == "next" || direction == "prev" || direction == "previous") {
+      return "focus failed: no panes";
+    }
+    const std::string where = direction == "up" ? "above"
+                              : direction == "down" ? "below"
+                              : direction == "left" ? "to the left"
+                                                    : "to the right";
+    return "no pane " + where;
+  }
+  relayout();
+  rebuild_command_context();
+  if (auto *cell = view->active_cell()) {
+    return "focused cell " + cell->id();
+  }
+  return "focused cell";
+}
+
+std::string Compositor::mux_kill() { return erase_cell(active_cell()); }
+
+std::string Compositor::mux_zoom() {
+  if (tcursor_view_ && tcursor_workspace_ == current_workspace_) {
+    return restore_tcursor();
+  }
+  if (tcursor_view_) {
+    tcursor_view_.reset();
+    tcursor_workspace_ = 0;
+  }
+  return promote_active_cell_to_tcursor();
+}
+
+std::string Compositor::mux_list() const {
+  auto *view = ncursor_view();
+  if (!view) {
+    return "no ncursor view";
+  }
+  Cell *focused = active_cell();
+  std::ostringstream out;
+  std::size_t count = 0;
+  for (const auto &stack : view->cell_stacks()) {
+    for (auto *cell : stack.cells) {
+      if (!cell || !cell->nterm()) {
+        continue;
+      }
+      if (count > 0) {
+        out << '\n';
+      }
+      out << (cell == focused ? "* " : "  ") << cell->id() << ' '
+          << cell->nterm()->columns() << 'x' << cell->nterm()->rows();
+      ++count;
+    }
+  }
+  return count == 0 ? "no panes" : out.str();
+}
 
 std::string Compositor::move_selected_cell(int delta) {
   if (!ncursor_view()) {
@@ -1453,19 +1943,16 @@ std::string Compositor::apply_theme_css(const std::string &css) {
     if (key == "border-color" && !theme_color(value, next.border_color)) return "invalid border-color";
     if (key == "background-color" && !theme_color(value, next.background_color)) return "invalid background-color";
     if (key == "command-bar-color" && !theme_color(value, next.command_bar_color)) return "invalid command-bar-color";
+    if (key == "launcher-bar-color" && !theme_color(value, next.launcher_bar_color)) return "invalid launcher-bar-color";
     if (key == "border-size" && !theme_pixels(value, next.border_size)) return "invalid border-size";
     if (key == "command-bar-height" && !theme_pixels(value, next.command_bar_height)) return "invalid command-bar-height";
     if (key == "status-bar-height" && !theme_pixels(value, next.status_bar_height)) return "invalid status-bar-height";
+    if (key == "launcher-bar-height" && !theme_pixels(value, next.launcher_bar_height)) return "invalid launcher-bar-height";
   }
   config_ = std::move(next);
   theme_engine_->swap_active(std::move(parsed));
   if (wayland_runtime_) {
-    diftray_wayland_style style{
-        config_.border_size, config_.command_bar_height, config_.status_bar_height,
-        {config_.border_color[0], config_.border_color[1], config_.border_color[2], config_.border_color[3]},
-        {config_.background_color[0], config_.background_color[1], config_.background_color[2], config_.background_color[3]},
-        {config_.command_bar_color[0], config_.command_bar_color[1], config_.command_bar_color[2], config_.command_bar_color[3]},
-        {1.0f, 0.72f, 0.18f, 1.0f}};
+    const diftray_wayland_style style = wayland_style();
     diftray_wayland_runtime_set_style(wayland_runtime_, &style);
     relayout();
   }
@@ -1478,6 +1965,19 @@ std::string Compositor::load_theme_file(const std::string &path) {
   std::ostringstream contents;
   contents << input.rdbuf();
   return apply_theme_css(contents.str());
+}
+
+// Types text into the focused cell's terminal, which is what a keymap's
+// Typeout() does. Refuses when no cell is focused rather than writing into
+// nothing, and reports the outcome so the status line can say what happened.
+std::string Compositor::type_out_text(const std::string &text) {
+  Cell *target = active_cell();
+  if (!target || !target->nterm() || !target->nterm()->running()) {
+    return "keymap: no running terminal to type into";
+  }
+  target->nterm()->feed_input(text);
+  target->nterm()->flush_input();
+  return "keymap: typed " + std::to_string(text.size()) + " characters";
 }
 
 std::string Compositor::launch_program(const std::string &command) {

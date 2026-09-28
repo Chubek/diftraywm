@@ -2,7 +2,9 @@
   border-size: 3px;
   command-bar-height: 40px;
   status-bar-height: 24px;
+  launcher-bar-height: 32px;
   border-color: #59a6ff;
   background-color: #090c11;
   command-bar-color: #141f2efa;
+  launcher-bar-color: #0f172af5;
 }

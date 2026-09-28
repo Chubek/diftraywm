@@ -1,0 +1,10 @@
+:root {
+  border-size: 3px;
+  command-bar-height: 40px;
+  status-bar-height: 24px;
+  launcher-bar-height: 32px;
+  border-color: #2456a6;
+  background-color: #e8eaf0;
+  command-bar-color: #d4d9e6fa;
+  launcher-bar-color: #c8d0e2fa;
+}

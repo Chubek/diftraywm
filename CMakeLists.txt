@@ -44,7 +44,7 @@ if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}")
     "not exist. Restore the vendored trees described in AGENTS.md section 11.")
 endif()
 
-set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL oniguruma libshell lua kaguya dynalo libcyaml tomlc99)
+set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL oniguruma libshell lua kaguya dynalo libcyaml tomlc99 libevdev libudev)
 set(_diftraywm_vendored_missing "")
 foreach(_dep IN LISTS _diftraywm_vendored_required)
   if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}/${_dep}")
@@ -150,6 +150,11 @@ pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 pkg_check_modules(NCURSESW REQUIRED IMPORTED_TARGET ncursesw)
+# The key remapper's system-wide backend. Both are vendored (see the libevdev and
+# libudev steps in scripts/build-vendored.sh); libudev's headers stay on the
+# include path as SYSTEM because they are third-party.
+pkg_check_modules(LIBUDEV REQUIRED IMPORTED_TARGET libudev)
+pkg_check_modules(LIBEVDEV REQUIRED IMPORTED_TARGET libevdev)
 
 
 
@@ -394,6 +399,8 @@ target_link_libraries(diftraywm_notelet PUBLIC termscript)
 
 add_library(diftraywm_compositor STATIC
   src/compositor/Compositor.cpp
+  src/compositor/ControlServer.cpp
+  src/compositor/Session.cpp
   src/compositor/WaylandRuntime.c
   src/compositor/DamageTracker.cpp
   src/compositor/Output.cpp
@@ -482,6 +489,26 @@ diftraywm_target_defaults(diftraywm_lua)
 target_include_directories(diftraywm_lua SYSTEM PRIVATE third_party/kaguya/include)
 target_link_libraries(diftraywm_lua PUBLIC diftray_lua_runtime)
 
+# The keymap model and its INI reader. Kept free of evdev and udev so the
+# compositor, diftrayctl, the tests and diftrayremap all parse the same file
+# without pulling in privileges they do not have.
+add_library(diftraywm_keymap STATIC
+  src/keymap/Keymap.cpp
+)
+diftraywm_target_defaults(diftraywm_keymap)
+
+# The system-wide evdev backend. Separate from the model on purpose: it needs
+# /dev/input and /dev/uinput, which only a privileged daemon has.
+add_library(diftraywm_remap STATIC
+  src/keymap/EvdevRemapper.cpp
+)
+diftraywm_target_defaults(diftraywm_remap)
+target_link_libraries(diftraywm_remap PUBLIC
+  diftraywm_keymap
+  PkgConfig::LIBUDEV
+  PkgConfig::LIBEVDEV
+)
+
 # ---------------------------------------------------------------------------
 # Executables
 # ---------------------------------------------------------------------------
@@ -499,6 +526,7 @@ function(diftraywm_link_exe target)
     diftraywm_theme
     diftraywm_plugin
     diftraywm_lua
+    diftraywm_keymap
     diftraywm_notelet
     diftray_libtsm
     diftray_ptytty
@@ -525,10 +553,41 @@ diftraywm_link_exe(diftray)
 add_dependencies(diftraywm diftraywm_bundled_notelets)
 add_dependencies(diftray diftraywm_bundled_notelets)
 
+# diftrayctl is a thin client: it needs the control-socket path helper and
+# libc sockets, nothing from the compositor or wlroots. Keeping it standalone
+# means it still links and runs when a session is down.
+add_executable(diftrayctl src/ctl/diftrayctl.cpp)
+target_include_directories(diftrayctl PRIVATE "${DIFTRAYWM_SRC}")
+target_compile_features(diftrayctl PRIVATE cxx_std_20)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(diftrayctl PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  if(DIFTRAYWM_WERROR)
+    target_compile_options(diftrayctl PRIVATE -Werror)
+  endif()
+endif()
+
+# diftrayremap is the system-wide half of the key remapper. It is a separate
+# binary, not a mode of the compositor, because grabbing the physical keyboard
+# and writing to uinput needs privileges the compositor must not have: running a
+# window manager as root, or taking the keyboard away from the session this
+# compositor is nested inside. It shares the keymap model with the compositor, so
+# one keymap.ini defines the mapping for both halves.
+add_executable(diftrayremap src/ctl/diftrayremap.cpp)
+target_include_directories(diftrayremap PRIVATE "${DIFTRAYWM_SRC}")
+target_compile_features(diftrayremap PRIVATE cxx_std_20)
+target_link_libraries(diftrayremap PRIVATE diftraywm_remap)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(diftrayremap PRIVATE -Wall -Wextra -Wno-unused-parameter)
+  if(DIFTRAYWM_WERROR)
+    target_compile_options(diftrayremap PRIVATE -Werror)
+  endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
-install(TARGETS diftray diftraywm RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(TARGETS diftray diftraywm diftrayctl diftrayremap
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES "${WLROOTS_LIBRARY}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/diftraywm")
 install(DIRECTORY "${DIFTRAY_VENDOR_PREFIX}/lib/"
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/diftraywm"
@@ -542,12 +601,17 @@ install(FILES include/DiftrayWM-Plugin.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR
 install(FILES EXTENSIONS.md MONITORS.md CONFIGURATION.md DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(FILES diftray.conf
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
+# The example keymap ships alongside the config that points at it, so a fresh
+# install has working keys and a file to copy.
+install(FILES keymap.ini
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(DIRECTORY themes
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm"
   FILES_MATCHING PATTERN "*.css")
 install(DIRECTORY help
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm"
   FILES_MATCHING PATTERN "*.1")
+install(FILES GUIDE.md DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 
 # ---------------------------------------------------------------------------
 # Tests

@@ -1,6 +1,8 @@
 #include "command/CommandBar.hpp"
 
 #include "compositor/Compositor.hpp"
+#include "keymap/Keymap.hpp"
+#include "theme/ThemeEngine.hpp"
 #include "views/Cell.hpp"
 #include "views/NCursorView.hpp"
 #include "views/GCursorView.hpp"
@@ -9,7 +11,9 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <exception>
+#include <vector>
 
 std::string join_tokens(const std::vector<std::string> &tokens, std::size_t start) {
   std::ostringstream out;
@@ -217,8 +221,32 @@ public:
     if (!context.compositor) {
       return "theme command unavailable";
     }
+    if (tokens.size() >= 2 && tokens[1] == "show") {
+      if (!context.theme_engine) {
+        return "theme command unavailable";
+      }
+      const auto &properties = context.theme_engine->active().tokens;
+      std::vector<std::string> names;
+      for (const auto &[key, value] : properties) {
+        if (key != "css") {
+          names.push_back(key);
+        }
+      }
+      if (names.empty()) {
+        return "no theme properties";
+      }
+      std::sort(names.begin(), names.end());
+      std::ostringstream out;
+      for (const auto &name : names) {
+        if (out.tellp() > 0) {
+          out << '\n';
+        }
+        out << name << ": " << properties.at(name);
+      }
+      return out.str();
+    }
     if (tokens.size() < 3 || tokens[1] != "load") {
-      return "theme supports: load <path>";
+      return "theme supports: load <path>, show";
     }
     return context.compositor->load_theme_file(join_tokens(tokens, 2));
   }
@@ -290,12 +318,65 @@ public:
   }
 };
 
-class WorkspaceHandler final : public CommandHandler {
+class MuxHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override {
+    return command == "mux";
+  }
+
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) {
+      return "mux command unavailable";
+    }
+    if (tokens.size() < 2) {
+      return "mux supports: split horizontal|vertical, focus next|prev|up|down|left|right, kill, zoom, list";
+    }
+    if (tokens[1] == "split") {
+      if (tokens.size() != 3) {
+        return "mux split requires horizontal or vertical";
+      }
+      if (tokens[2] == "horizontal" || tokens[2] == "h") {
+        return context.compositor->mux_split(false);
+      }
+      if (tokens[2] == "vertical" || tokens[2] == "v") {
+        return context.compositor->mux_split(true);
+      }
+      return "mux split requires horizontal or vertical";
+    }
+    if (tokens[1] == "next" || tokens[1] == "prev" ||
+        tokens[1] == "previous" || tokens[1] == "up" ||
+        tokens[1] == "down" || tokens[1] == "left" ||
+        tokens[1] == "right") {
+      if (tokens.size() != 2) {
+        return "mux " + tokens[1] + " takes no arguments";
+      }
+      return context.compositor->mux_focus(tokens[1] == "previous" ? "prev"
+                                                                   : tokens[1]);
+    }
+    if (tokens[1] == "focus") {
+      if (tokens.size() != 3) {
+        return "mux focus requires next, prev, up, down, left, or right";
+      }
+      return context.compositor->mux_focus(tokens[2]);
+    }
+    if (tokens[1] == "kill" || tokens[1] == "zoom" || tokens[1] == "list") {
+      if (tokens.size() != 2) {
+        return "mux " + tokens[1] + " takes no arguments";
+      }
+      if (tokens[1] == "kill") return context.compositor->mux_kill();
+      if (tokens[1] == "zoom") return context.compositor->mux_zoom();
+      return context.compositor->mux_list();
+    }
+    return "mux supports: split horizontal|vertical, focus next|prev|up|down|left|right, kill, zoom, list";
+  }
+};
+
+class WorkspaceCommandHandler final : public CommandHandler {
 public:
   bool matches(std::string_view command) const override {
     return command == "workspace";
   }
-
   std::string execute(const std::vector<std::string> &tokens, CommandScope,
                       CommandContext &context) override {
     if (!context.compositor) {
@@ -344,13 +425,198 @@ public:
 };
 
 
+class PluginHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "plugin"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "plugins unavailable";
+    if (tokens.size() < 2) {
+      return "plugin supports: load <path>, unload <path>, list";
+    }
+    if (tokens[1] == "load") {
+      if (tokens.size() < 3) return "plugin load requires a shared library path";
+      return context.compositor->load_plugin(join_tokens(tokens, 2));
+    }
+    if (tokens[1] == "unload") {
+      if (tokens.size() < 3) return "plugin unload requires a shared library path";
+      return context.compositor->unload_plugin(join_tokens(tokens, 2));
+    }
+    if (tokens[1] == "list") return context.compositor->list_plugins();
+    return "plugin supports: load <path>, unload <path>, list";
+  }
+};
+
+class ExtensionHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "extension"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "extensions unavailable";
+    if (tokens.size() < 2) {
+      return "extension supports: exec <path>, list";
+    }
+    if (tokens[1] == "exec") {
+      if (tokens.size() < 3) return "extension exec requires a path";
+      return context.compositor->exec_extension(join_tokens(tokens, 2));
+    }
+    if (tokens[1] == "list") return context.compositor->list_extensions();
+    return "extension supports: exec <path>, list";
+  }
+};
+
+class ScriptHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "script"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "scripts unavailable";
+    if (tokens.size() < 2) {
+      return "script supports: source <path.tsc>";
+    }
+    if (tokens[1] == "source") {
+      if (tokens.size() < 3) return "script source requires a Termscript path";
+      return context.compositor->source_script(join_tokens(tokens, 2));
+    }
+    return "script supports: source <path.tsc>";
+  }
+};
+
+class LauncherHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "launcher"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "launcher unavailable";
+    if (tokens.size() < 2) {
+      return "launcher supports: lock, unlock, toggle, status";
+    }
+    if (tokens[1] == "lock") {
+      if (tokens.size() != 2) return "launcher lock takes no arguments";
+      if (context.compositor->launcher_locked()) return "launch bar already locked";
+      return context.compositor->toggle_launcher_lock();
+    }
+    if (tokens[1] == "unlock") {
+      if (tokens.size() != 2) return "launcher unlock takes no arguments";
+      if (!context.compositor->launcher_locked()) return "launch bar already unlocked";
+      return context.compositor->toggle_launcher_lock();
+    }
+    if (tokens[1] == "toggle") {
+      if (tokens.size() != 2) return "launcher toggle takes no arguments";
+      return context.compositor->toggle_launcher_lock();
+    }
+    if (tokens[1] == "status") {
+      if (tokens.size() != 2) return "launcher status takes no arguments";
+      return context.compositor->launcher_status();
+    }
+    return "launcher supports: lock, unlock, toggle, status";
+  }
+};
+
+class KeymapHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "keymap"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "keymap unavailable";
+    if (tokens.size() < 2) {
+      return "keymap supports: show, reload, profile <name>, reset, path, "
+             "check <path>, chord <spec>";
+    }
+    const std::string &sub = tokens[1];
+    if (sub == "show" || sub == "list") {
+      if (tokens.size() != 2) return "keymap show takes no arguments";
+      return context.compositor->keymap_info();
+    }
+    if (sub == "path") {
+      if (tokens.size() != 2) return "keymap path takes no arguments";
+      return "keymap file: " +
+             (context.compositor->keymap().profile_path.empty()
+                  ? std::string("(none loaded)")
+                  : context.compositor->keymap().profile_path);
+    }
+    if (sub == "reload") {
+      if (tokens.size() != 2) return "keymap reload takes no arguments";
+      std::string error;
+      if (context.compositor->load_keymap(error)) {
+        return "reloaded " + context.compositor->keymap().profile_path +
+               " (" + std::to_string(context.compositor->keymap().profiles.size()) +
+               " profiles)";
+      }
+      return "keymap reload failed: " + error;
+    }
+    if (sub == "profile") {
+      if (tokens.size() != 3) return "keymap profile requires a profile name";
+      // select_profile reports the failure through the status line when the
+      // name is unknown, so check the keymap rather than reporting success for
+      // a profile that was never entered.
+      std::string error;
+      if (!context.compositor->keymap().profile_named(tokens[2], error)) {
+        return error;
+      }
+      context.compositor->keymap_select_profile(tokens[2]);
+      return "keymap profile: " + tokens[2];
+    }
+    if (sub == "reset") {
+      if (tokens.size() != 2) return "keymap reset takes no arguments";
+      context.compositor->keymap_reset_profile();
+      return "keymap profile: " + context.compositor->keymap().default_profile;
+    }
+    if (sub == "chord") {
+      // Validates a chord spelling without a file, so a user can check the
+      // INI's key names from the Command Bar.
+      if (tokens.size() != 3) return "keymap chord requires a chord such as <C-q>";
+      KeyChord chord;
+      std::string error;
+      if (!parse_key_chord(tokens[2], chord, error)) return "keymap chord: " + error;
+      return "chord <" + chord.str() + "> is code " + std::to_string(chord.code) +
+             " with " + std::to_string(__builtin_popcount(chord.mods)) + " modifier(s)";
+    }
+    if (sub == "check") {
+      // Parses a candidate file without adopting it, so a broken edit can be
+      // diagnosed before `keymap reload` replaces a working keymap.
+      const std::string path = join_tokens(tokens, 2);
+      Keymap candidate;
+      std::string error;
+      if (!load_keymap(path, candidate, error)) return "keymap check failed: " + error;
+      return path + " is valid: " + std::to_string(candidate.profiles.size()) +
+             " profiles, prefix " +
+             (candidate.prefix.code ? "<" + candidate.prefix.str() + ">"
+                                    : std::string("(none)"));
+    }
+    return "keymap supports: show, reload, profile <name>, reset, path, "
+           "check <path>, chord <spec>";
+  }
+};
+
+class SessionHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "session"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "session control unavailable";
+    if (tokens.size() < 2) {
+      return "session supports: status, exit, restart";
+    }
+    if (tokens[1] == "status") return context.compositor->session_status();
+    if (tokens[1] == "exit") return context.compositor->request_exit();
+    if (tokens[1] == "restart") return context.compositor->request_restart();
+    return "session supports: status, exit, restart";
+  }
+};
+
 class ConfigHandler final : public CommandHandler {
 public:
   bool matches(std::string_view command) const override { return command == "config"; }
   std::string execute(const std::vector<std::string> &tokens, CommandScope,
                       CommandContext &context) override {
     if (!context.compositor) return "configuration unavailable";
-    if (tokens.size() == 2 && tokens[1] == "vars") return context.compositor->config_variables();
+    if (tokens.size() >= 2) {
+      if (tokens[1] == "vars") return context.compositor->config_variables();
+      if (tokens[1] == "path") return context.compositor->config_file();
+      if (tokens[1] == "open") return context.compositor->open_config();
+      if (tokens[1] == "reload") return context.compositor->reload_config();
+    }
     if (tokens.size() >= 2 && (tokens[1] == "eval" || tokens[1] == "run")) {
       // The expression parser owns quotes and escapes; do not reconstruct from tokens.
       size_t offset = context.raw_input.find_first_not_of(" \t\r\n");
@@ -361,7 +627,7 @@ public:
       if (offset != std::string::npos)
         return context.compositor->evaluate_config(context.raw_input.substr(offset), tokens[1] == "run");
     }
-    return "config supports: vars, eval <expression>, run <expression>";
+    return "config supports: vars, path, open, reload, eval <expression>, run <expression>";
   }
 };
 
@@ -381,5 +647,12 @@ void register_builtin_handlers(CommandBar &bar) {
   bar.register_handler(std::make_unique<NoteletHandler>());
   bar.register_handler(std::make_unique<HelpHandler>());
   bar.register_handler(std::make_unique<TabHandler>());
-  bar.register_handler(std::make_unique<WorkspaceHandler>());
+  bar.register_handler(std::make_unique<MuxHandler>());
+  bar.register_handler(std::make_unique<WorkspaceCommandHandler>());
+  bar.register_handler(std::make_unique<PluginHandler>());
+  bar.register_handler(std::make_unique<ExtensionHandler>());
+  bar.register_handler(std::make_unique<ScriptHandler>());
+  bar.register_handler(std::make_unique<SessionHandler>());
+  bar.register_handler(std::make_unique<LauncherHandler>());
+  bar.register_handler(std::make_unique<KeymapHandler>());
 }

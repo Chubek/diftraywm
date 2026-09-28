@@ -1,0 +1,298 @@
+.TH DIFTRAYCTL 1
+.SH NAME
+diftrayctl - control a running DiftrayWM session
+.SH SYNOPSIS
+.B diftrayctl
+.I command
+.RI [ arguments ]
+.br
+.B diftrayctl
+.B bar
+.I "command bar text"
+.br
+.B diftrayctl
+.B version
+.br
+.B diftrayctl
+.B --help
+.SH DESCRIPTION
+.B diftrayctl
+drives a compositor that is already running. The compositor listens on a Unix
+control socket and executes one Command Bar command per connection, then
+replies with the resulting status line.
+.PP
+Because every remote operation is a Command Bar command, the same work can be
+done interactively by typing the same text after
+.BR : ,
+and any command registered later by a plugin or an extension stays reachable
+from the shell through
+.BR "diftrayctl bar" .
+.PP
+The socket lives at
+.I $XDG_RUNTIME_DIR/diftraywm-ctl-$UID.sock
+and is created mode 0700: it can restart the compositor and load code, so only
+the session owner may use it.
+.B DIFTRAYWM_CONTROL_SOCKET
+overrides the location, which is how more than one compositor can be addressed
+on the same machine.
+.SH SESSION
+.TP
+.B exit-session
+Leave the session and return to the Linux console. Aliases:
+.BR session-exit ,
+.BR quit .
+.TP
+.B restart-session
+Re-execute the compositor in place, keeping the same process id, environment
+and arguments. Aliases:
+.BR session-restart ,
+.BR restart .
+.TP
+.B status
+Report the workspace, output, NCursors, cells, GCursors, loaded plugins and
+extensions, the active configuration file, the control socket, the font and the
+theme.
+.SH PLUGINS AND EXTENSIONS
+.TP
+.BI "plugin-load " path
+Load a native plugin shared library with dynalo. Its
+.B diftraywm_plugin_init
+runs against the same API it would get at startup, and the commands it
+registers become usable immediately.
+.TP
+.BI "plugin-unload " path
+Run a plugin's cleanup, drop the commands it registered, and unload the
+library.
+.TP
+.B plugin-list
+List loaded plugin paths.
+.TP
+.BI "extension-exec " path
+Load and run a Lua extension. The extension may call
+.BR diftray.status ,
+.BR diftray.command ,
+.BR diftray.on ,
+and
+.B diftray.register_command
+at load time. Alias:
+.BR extension-load .
+.TP
+.B extension-list
+List loaded extension paths.
+.SH CONFIGURATION
+.TP
+.B config-open
+Open the configuration file in use in
+.BR $VISUAL ,
+.BR $EDITOR ,
+or
+.BR vi .
+The file is quoted, so paths containing spaces are safe.
+.TP
+.B config-path
+Print the configuration file the compositor loaded.
+.TP
+.B config-reload
+Re-read the configuration file and apply it: theme, font, help search path and
+settings. The reload is atomic, so an invalid file is rejected and the running
+configuration is kept.
+.TP
+.B config-vars
+List configuration variables with their types.
+.TP
+.BI "config-eval " expression
+Evaluate a configuration expression and print the value.
+.TP
+.BI "config-run " expression
+Evaluate a configuration expression and execute the commands it returns.
+.SH KEY REMAPPING
+Every key is configured in a keymap INI file rather than in the config file, so
+these act on the loaded one. See
+.BR diftraywm\-keymap (5).
+.TP
+.B keymap-show
+Print the loaded keymap, its profiles, the active profile and every binding.
+Aliased as
+.BR keys .
+.TP
+.B keymap-path
+Print the path of the loaded keymap.
+.TP
+.B keymap-reload
+Re-read the keymap file. A parse failure is reported and the previous keymap is
+kept, so a broken edit cannot leave the session without keys. Aliased as
+.BR reload\-keymap .
+.TP
+.BI keymap\-profile " name"
+Switch to another profile.
+.B keymap-reset
+returns to the default profile.
+.TP
+.BI keymap\-check " path"
+Parse a candidate file and report what it contains, without adopting it. This is
+how to diagnose an edit before reloading it.
+.TP
+.BI keymap\-chord " spec"
+Validate a chord spelling such as
+.I <C-q>
+and report the key code it resolves to, without needing a file.
+.PP
+System-wide remapping is not here, because it is not a Command Bar command:
+it is
+.BR diftrayremap (1),
+a separate program that needs privileges the compositor must not have. Run
+.B diftrayremap check
+to see whether this machine can do it.
+.SH TERMSCRIPT
+.TP
+.BI "source-script " path
+Run a Termscript file and print the output it produced with
+.BR G:puts .
+Statements are terminated with semicolons, as in the bundled notelets. The
+script runs on the compositor thread, so it is meant for short interactive
+snippets; long-running work belongs in a notelet, which has its own worker
+process. Output above 64 KiB is refused.
+.SH CELLS AND MULTIPLEXER
+.TP
+.BI "spawn-cell " "above|below"
+Create a terminal cell. Aliases:
+.BR spawn-above ,
+.BR spawn-below .
+.TP
+.B kill-cell
+Remove the focused cell.
+.TP
+.BI "mux-split " "horizontal|vertical"
+Split the focused pane below or beside it. Shortcut: Meta+S and Meta+V.
+.TP
+.BI "mux-focus " direction
+Move multiplexer focus: next, prev, up, down, left or right. Shortcut: Meta+O
+and Meta+P, and Meta+Ctrl with an arrow key.
+.TP
+.B mux-kill
+Close the focused pane. The last pane is kept.
+.TP
+.B mux-zoom
+Expand the focused pane to a TCursor and back. Shortcut: Meta+Z.
+.TP
+.B mux-list
+List panes, marking the focused one with *.
+.SH VIEWS, TABS AND MONITORS
+.TP
+.BR ncursor-list ", " ncursor-new
+List NCursors and their cells, or create an NCursor.
+.TP
+.BR tab-next ", " tab-prev
+Cycle NCursor or GCursor tabs.
+.TP
+.BI "workspace " number
+Switch to a workspace, 1 to 10.
+.TP
+.B output-list
+List monitors and their geometry, marking the focused one.
+.TP
+.BI "output-focus " "name|next|prev"
+Focus a monitor.
+.TP
+.BI "output-move " name
+Move the active NCursor and its clients to a monitor.
+.TP
+.BI "output-rotate " "name angle"
+Rotate a monitor counter-clockwise: 0, 90, 180 or 270.
+.TP
+.BI "output-scale " "name scale"
+Set monitor scale, 0.5 to 4.
+.TP
+.BI "output-position " "name x y"
+Place a monitor in logical coordinates, or restore automatic placement with
+.BI "output-position " "name auto"
+.
+.SH CURSORS AND NOTELETS
+.TP
+.B cursor-list
+List graphical cursor identifiers, marking docked ones with *.
+.TP
+.BI "cursor-dock " id
+Hide a graphical cursor in its Cell's Cursor Area.
+.TP
+.BI "cursor-restore " id
+Restore a docked graphical cursor.
+.TP
+.BI "cursor-assign " "id F1-F4"
+Bind a graphical cursor to a quick-restore key.
+.TP
+.BR notelet-list ", " notelet-open " " name ", " notelet-close ", " notelet-refresh
+List notelets, open one in a new cell, close the active one, or re-render it.
+.SH THEMING
+.TP
+.BI "theme-load " "file.css"
+Apply a CSS theme file. See themes/default.css and themes/light.css.
+.TP
+.B theme-show
+List the active theme properties.
+.TP
+.BI "set-theme " css
+Apply inline CSS theme properties, for example
+.RB ' ":root { border-size: 2px; }" '.
+.SH HELP
+.TP
+.BI "help " "[page]"
+Open a manual page in a cell. Without a page, the index is shown.
+.SH LAUNCHER TASKBAR
+The launch bar is anchored under the status bar and painted above the cells
+and the graphical windows. It lists the live NCursors and GCursors of the
+current workspace, marking the active one, and shows the
+.B launch>
+prompt while the launcher has focus. It is hidden when idle unless it is
+locked.
+.TP
+.B lock-launchbar
+Pin the launch bar to the top of the screen for the rest of the session. The
+command reports "launch bar already locked" when it was already pinned.
+.TP
+.B unlock-launchbar
+Let the launch bar hide again when the launcher is not in use.
+.TP
+.B toggle-launchbar
+Flip between locked and unlocked.
+.TP
+.B launchbar-status
+Report the lock state, the anchor, the bar height, whether the bar is currently
+visible, and whether Caps Lock is being offered as Meta.
+.PP
+The equivalent Command Bar commands are
+.BR "launcher lock" ,
+.BR "launcher unlock" ,
+.B launcher toggle
+and
+.BR "launcher status" .
+The lock is remembered across
+.B config reload
+and can be preset with
+.B launcher_locked
+in the configuration file.
+.SH EXIT STATUS
+.TP
+.B 0
+The command reached the compositor and was recognised.
+.TP
+.B 1
+The compositor did not recognise the command.
+.TP
+.B 2
+Usage error: unknown subcommand, or a missing required argument.
+.TP
+.B 3
+No DiftrayWM session is reachable on the control socket.
+.PP
+Handlers report their own failures in the printed status line, for example
+"plugin load failed: ...". Scripts should read the text as well as the status.
+.SH ENVIRONMENT
+.TP
+.B DIFTRAYWM_CONTROL_SOCKET
+Control socket path, overriding the default under XDG_RUNTIME_DIR.
+.SH SEE ALSO
+diftraywm(1),
+.BR diftray.conf (5),
+GUIDE.md,
+CONFIGURATION.md

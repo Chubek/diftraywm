@@ -12,3 +12,32 @@ harfbuzz: tree snapshot
 freetype: tree snapshot
 libptytty: tree snapshot
 PEGTL: tree snapshot
+libevdev: tree snapshot (1.13.6)
+libudev: tree snapshot (182)
+
+# libudev and libevdev were not previously part of the vendored chain. They
+# back the system-wide key remapper (src/keymap, diftrayremap).
+#
+# third_party/libudev is a pruned git snapshot, not a release tarball, so
+# scripts/build-vendored.sh repairs a build-local copy before running
+# autoreconf. third_party/ itself is never written to. The repairs, in order:
+#
+#   1. No-op gtk-doc.make and m4/gtk-doc.m4 stand-ins. A tarball would carry
+#      these; a git snapshot does not, and autoreconf cannot parse configure.ac
+#      without GTK_DOC_CHECK.
+#   2. EXTRA_DIST initialised before use in the two docs Makefile.am files,
+#      which current automake rejects.
+#   3. The HAVE_XSLTPROC block removed from Makefile.am. Its rules fetch DocBook
+#      XSL over the network, and there is no configure flag to disable them.
+#   4. The stray `dist_man_MANS += src/scsi_id/scsi_id.8` line removed. It sits
+#      outside ENABLE_MANPAGES and names a file the snapshot does not ship.
+#   5. The missing `udev_builtin_validate` prototype added to src/udev.h. This
+#      snapshot folds upstream's udev-builtin.h into udev.h but omits that one
+#      declaration, which src/udevd.c needs. The definition already exists in
+#      src/udev-builtin.c, so nothing is invented.
+#
+# configure flags: --disable-gudev --disable-introspection --disable-keymap
+# --disable-mtd_probe --with-systemdsystemunitdir=no, plus
+# CPPFLAGS=-include sys/sysmacros.h (this snapshot calls major()/minor()
+# without including <sys/sysmacros.h>). None of the disabled components is part
+# of the libudev API DiftrayWM calls, and diftrayremap never runs a udev daemon.

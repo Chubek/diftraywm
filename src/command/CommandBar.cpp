@@ -117,3 +117,13 @@ void CommandBar::unregister_command(const std::string &name, const void *owner) 
 void CommandBar::unregister_owner(const void *owner) {
   std::erase_if(extensions_, [owner](const auto &entry) { return entry.second.owner == owner; });
 }
+
+std::optional<CommandScope> CommandBar::required_scope(const std::string &command) const {
+  const auto tokens = tokenize(command);
+  if (tokens.empty()) return std::nullopt;
+  for (const auto &handler : handlers_)
+    if (handler && handler->matches(tokens.front())) return std::nullopt;
+  const auto it = extensions_.find(tokens.front());
+  if (it == extensions_.end()) return std::nullopt;
+  return it->second.required_scope;
+}

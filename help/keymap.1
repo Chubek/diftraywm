@@ -1,0 +1,180 @@
+.TH DIFTRAYWM-KEYMAP 5
+.SH NAME
+keymap.ini - key remapping and key bindings for DiftrayWM
+.SH DESCRIPTION
+Every key in DiftrayWM is configured by an INI file in the format keyd uses. The
+compositor's own configuration does not carry key settings; it names this file
+and nothing more:
+.PP
+.RS
+[general]
+keymap = keymap.ini
+.RE
+.PP
+The path is resolved relative to the configuration file, so a configuration
+directory stays self-contained. Remove the setting, or point it at a file that
+does not exist, and the compositor falls back to its built-in keys rather than
+refusing to start.
+.PP
+The format is:
+.PP
+.RS
+[section]
+chord = Action(argument)
+.RE
+.PP
+An unknown section, chord or action is a hard error reported with a line
+number, not a silently ignored line, so a typo appears as a message instead of
+a key that quietly does nothing.
+.SH CHORDS
+A chord is a key plus exactly the modifiers written.
+.TP
+.B <C-q>
+Ctrl+q. Modifier prefixes are C for Ctrl, A for Alt, S for Shift, M for Meta
+(the Logo/Super key) and G for Logo. They combine: <C-S-q> is Ctrl+Shift+q.
+A chord means the modifiers written and no others, so <C-q> is not Ctrl+Shift+q
+and not plain q.
+.TP
+.B <f8>
+F1 to F12, written in lower case.
+.TP
+.B <space> <enter> <tab> <backspace> <esc> <del> <ins> <home> <end>
+.TP
+.B <up> <down> <left> <right> <pageup> <pagedown> <menu> <prtsc> <pause>
+.TP
+.B <grave> <minus> <equal> <leftbrace> <rightbrace> <backslash>
+.TP
+.B <semicolon> <apostrophe> <comma> <dot> <slash>
+.TP
+.B a-z, 0-9 and the punctuation keys
+May be written bare. The character itself works too, so <;> and ; name the same
+key.
+.TP
+.B <leftctrl> <rightctrl> <leftalt> <rightalt> <leftshift> <rightshift> <leftlogo> <rightlogo>
+The physical modifier keys. The kernel calls the Logo keys LEFTMETA and
+RIGHTMETA; they are spelled logo here because that is what the key is labelled.
+.SH ACTIONS
+.TP
+.B Diftray(command)
+Dispatch a Command Bar command. Everything that can be typed after : works
+here, which is what lets a profile drive the compositor without a new binary.
+See diftraywm-commands(7).
+.TP
+.B Exec(command)
+Run a program, detached, with WAYLAND_DISPLAY set to this session.
+.TP
+.B Typeout(text)
+Type text into the focused cell's terminal. Refused when no cell is focused.
+.TP
+.B Trigger(profile)
+Switch to another profile. The key is swallowed, so switching profile does not
+also type the character.
+.TP
+.B Remap(<chord>)
+Send a different chord downstream instead of this one. A remap cycle
+terminates rather than recursing.
+.TP
+.B Ignore()
+Swallow the key entirely, which is how a key is disabled.
+.SH SECTIONS
+.TP
+.B [devices]
+The keyboards the system-wide remapper should intercept, as
+.I VENDOR:PRODUCT
+in hexadecimal, one per line:
+.PP
+.RS
+[devices]
+keyboard = 320f:5080
+.RE
+.PP
+Omit the section entirely to mean every keyboard, which is the safe default: a
+machine that is only half remapped is a machine where the same chord does two
+different things depending on which board it was typed on.
+.TP
+.B [init]
+The Meta prefix.
+.B prefix
+is the chord, and
+.B action
+is what it does, which is normally Trigger() into a profile:
+.PP
+.RS
+[init]
+prefix = <C-q>
+action = Trigger(profile-1)
+.RE
+.PP
+Two further settings are accepted. default_profile names the profile active at
+startup, defaulting to "default". system_wide is true or false, and is a
+request rather than a switch: it asks for the system-wide backend as well, but
+diftrayremap still has to be able to open /dev/uinput and still has to be
+started deliberately.
+.TP
+.B [diftray]
+The help pager's keys, which used to be settings in the configuration file:
+help_key_close, help_key_search, help_key_next, help_key_previous,
+help_key_page_down, help_key_page_up, help_key_line_down and help_key_line_up.
+Each takes a single character or one of space, pagedown, pageup, up, down. The
+values in the shipped keymap.ini are the defaults, so the whole section can be
+deleted without changing behaviour.
+.TP
+.B [default] and any other name
+A profile: a set of chord to action bindings. "default" is active at startup,
+and the shipped keymap.ini documents the compositor's built-in keys there as
+commented-out lines.
+.SH THE PREFIX
+The [init] prefix works the way keyd's does. Pressing it on its own runs the
+[init] action, normally Trigger() into another profile, and the keypress is
+swallowed so the chord never reaches the terminal. Bind a chord in the new
+profile back to "default" to return to the normal keys. keymap reset and
+diftrayctl keymap-reset do the same thing from outside, so nothing is lost if
+no exit is bound.
+.SH TWO BACKENDS, ONE FILE
+The compositor applies this file to the keys it already reads. That needs no
+privileges and affects only the DiftrayWM session.
+.PP
+diftrayremap(1) applies the same file system-wide. It takes the physical
+keyboard away with EVIOCGRAB and republishes it through uinput, so the
+remapping reaches every consumer on the machine: the compositor, a TTY,
+another session, anything reading evdev. It needs access to /dev/input/event*
+and /dev/uinput, which normally means running it as root, which is why it is a
+separate program rather than a mode of the compositor. A compositor that
+grabbed the keyboard would take it away from the session it is nested inside,
+and would require every user to run their window manager as root.
+.PP
+Only evdev-level actions mean anything to diftrayremap. Ignore(), Remap() and
+Trigger() work at that layer. Diftray(), Exec() and Typeout() are compositor
+actions with no evdev equivalent, so those keys pass through untouched and the
+compositor's own copy of this file handles them.
+.SH COMMANDS
+.TP
+.B :keymap show
+Print the loaded keymap, its profiles, the active one and every binding.
+.TP
+.B :keymap reload
+Re-read the file. A parse failure is reported and the previous keymap is kept.
+.TP
+.B :keymap profile <name>
+Switch to another profile. keymap reset returns to the default profile.
+.TP
+.B :keymap path
+Print the loaded keymap's path.
+.TP
+.B :keymap check <path>
+Parse a candidate file and report what it contains, without adopting it. This
+is how to diagnose an edit before reloading it.
+.TP
+.B :keymap chord <spec>
+Validate a chord spelling and report the key code it resolves to, without
+needing a file.
+.SH ENVIRONMENT
+.TP
+.B DIFTRAYWM_KEYMAP
+The file diftrayremap reads when given no argument. Defaults to keymap.ini.
+.SH FILES
+.TP
+.I keymap.ini
+The example keymap, installed next to diftray.conf.
+.SH SEE ALSO
+diftrayremap(1), diftrayctl(1), diftraywm-commands(7)

@@ -299,7 +299,7 @@ public:
 };
 
 const std::set<std::string> reserved{"keysym", "keycode", "str",  "commands",
-                                     "bind",   "let",     "fn",   "macro",
+                                     "Composite", "bind",   "let",     "fn",   "macro",
                                      "eval",   "true",    "false"};
 using Environment = std::map<std::string, std::function<ConfigValue()>>;
 uint32_t parse_modifiers(const std::string &text) {
@@ -467,6 +467,23 @@ struct ConfigProgram::Impl {
         if (!ConfigProgram::commands(commands, checked, error))
           fail(e, error);
         return commands;
+      }
+      if (name == "Composite") {
+        if (args.empty() || args.size() > 64)
+          fail(e, "Composite() requires 1..64 arguments");
+        std::string result;
+        for (const auto &arg : args) {
+          const auto &part = as<std::string>(arg, e, "key or modifier string");
+          if (part.empty() || part.find('+') != std::string::npos)
+            fail(e, "Composite() names must be nonempty and must not "
+                    "contain '+'");
+          if (!result.empty())
+            result.push_back('+');
+          result += part;
+          if (result.size() > max_text)
+            fail(e, "string exceeds 64 KiB");
+        }
+        return result;
       }
       if (name != "keycode" && name != "keysym" && name != "str")
         fail(e, "undefined function or macro: " + name);

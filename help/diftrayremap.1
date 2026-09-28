@@ -1,0 +1,150 @@
+.TH DIFTRAYREMAP 1
+.SH NAME
+diftrayremap \- system-wide key remapping for DiftrayWM
+.SH SYNOPSIS
+.B diftrayremap check
+.RI [ KEYMAP ]
+.br
+.B diftrayremap list
+.RI [ KEYMAP ]
+.br
+.B diftrayremap run
+.RI [ KEYMAP ]
+.br
+.B diftrayremap
+.B \-\-help
+.SH DESCRIPTION
+diftrayremap is the system-wide half of DiftrayWM's key remapper. The compositor
+applies the keymap INI to the keys it already reads, unprivileged and scoped to
+its own session. This tool does the other half: it takes the physical keyboard
+with EVIOCGRAB and republishes it through uinput with the same profile applied.
+Because the events are transformed underneath every consumer, the remapping
+applies to the whole machine — the compositor, a TTY, another session, or
+anything reading evdev directly.
+.PP
+It reads the same keymap.ini the compositor does, so the mapping is defined
+once. See
+.BR diftraywm\-keymap (5)
+for the file format.
+.SH WHY A SEPARATE PROGRAM
+That reach is why diftrayremap is a separate binary rather than a mode of the
+compositor.
+.PP
+The compositor must not need root. A compositor that grabbed the physical
+keyboard would take it away from whatever session it is nested inside, and
+running a window manager as root would be a far worse trade than not having
+system-wide remapping. Splitting the two lets the common case stay
+unprivileged and keeps the privileged, machine-wide behaviour a deliberate,
+separate decision.
+.SH PRIVILEGES
+Opening /dev/input/event* and /dev/uinput normally requires either root or a
+udev rule granting access. Both nodes are mode 0660 root-owned by default, and
+/dev/input/event* is additionally group
+.BR input .
+.PP
+Either run the tool as root, or add a rule granting the narrow access it needs.
+A rule of this shape is sufficient:
+.PP
+.RS
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660"
+KERNEL=="event*", SUBSYSTEM=="input", GROUP="input", MODE="0660"
+.RE
+.PP
+together with adding the user or service that runs diftrayremap to the
+.B input
+group. Do not grant 0666.
+.PP
+.B check
+reports what is missing and prints the exact remedy, so there is no need to
+guess.
+.SH COMMANDS
+.TP
+.B check
+Report whether remapping can run, and what it found. Prints whether
+/dev/uinput exists and is writable, whether the effective user is root, whether
+it is in the
+.B input
+group, the keymap's summary, and the keyboards
+.B [devices]
+resolves to. Ends with a verdict line: ready, nothing to remap, or unavailable
+with the reason. Exits 0 only when it is ready.
+.TP
+.B list
+Print the keyboards the keymap's
+.B [devices]
+section resolves to, as
+.IR VENDOR:PRODUCT ,
+device node and name — one per line. Use it to fill in
+.BR [devices] ,
+so the identifiers do not have to be guessed. Exits 1 when nothing matches.
+.TP
+.B run
+Claim the matching keyboards, publish the virtual device, and remap until
+interrupted. This is the usual mode.
+.B SIGINT
+.RB ( Ctrl-C ),
+.B SIGTERM
+and
+.B SIGHUP
+all stop it cleanly: every grab is released and the virtual device is destroyed,
+so the physical keyboard works again immediately.
+.TP
+.B \-\-help
+Print usage.
+.SH LIMITATIONS
+The evdev layer can only express what is meaningful at the device level:
+.BR Ignore() ,
+.B Remap()
+and
+.B Trigger()
+work there.
+.BR Diftray() ,
+.B Exec()
+and
+.B Typeout()
+are compositor actions with no evdev equivalent, so those keys pass through
+untouched and the compositor's own copy of the keymap handles them.
+.PP
+One virtual device is published, so
+.B [devices]
+may name only a single keyboard. A keymap naming several is refused with an
+explanation rather than half-applied.
+.PP
+The tool also refuses to run when
+.B system_wide
+is not requested, when no keyboard in
+.B [devices]
+is connected, and when the connected keyboard is not the one named. Each of
+those is reported as a specific message.
+.SH ENVIRONMENT
+.TP
+.B DIFTRAYWM_KEYMAP
+The file to read when no argument is given. Defaults to
+.BR keymap.ini .
+.SH EXIT STATUS
+.TP
+.B 0
+The command succeeded.
+.TP
+.B 1
+The command was refused or failed. The reason is on standard error.
+.TP
+.B 2
+Usage error.
+.SH EXAMPLES
+Find out what the machine can do, and what is plugged in:
+.PP
+.RS
+diftrayremap check keymap.ini
+diftrayremap list keymap.ini
+.RE
+.PP
+Fill in
+.B [devices]
+from that output, then start remapping:
+.PP
+.RS
+diftrayremap run keymap.ini
+.RE
+.SH SEE ALSO
+diftraywm\-keymap(5), diftrayctl(1)

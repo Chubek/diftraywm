@@ -50,6 +50,20 @@ diftraywm_target_defaults(diftraywm_nterm_input_test)
 target_link_libraries(diftraywm_nterm_input_test PRIVATE diftraywm_nterm)
 add_test(NAME diftraywm_nterm_input_test COMMAND diftraywm_nterm_input_test)
 
+# The keymap subsystem. It links only the model and the evdev backend, neither
+# of which needs a seat, a device or root: map_event() is a pure function, so
+# the whole decision table is covered without privileges.
+add_executable(diftraywm_keymap_test keymap.cpp)
+diftraywm_target_defaults(diftraywm_keymap_test)
+target_link_libraries(diftraywm_keymap_test PRIVATE diftraywm_remap)
+add_test(NAME diftraywm_keymap_test COMMAND diftraywm_keymap_test)
+
+# The compositor's half of the keymap: a profile applied to real key events.
+add_executable(diftraywm_keymap_compositor_test keymap_compositor.cpp)
+diftraywm_target_defaults(diftraywm_keymap_compositor_test)
+diftraywm_link_exe(diftraywm_keymap_compositor_test)
+add_test(NAME diftraywm_keymap_compositor_test COMMAND diftraywm_keymap_compositor_test)
+
 add_executable(diftraywm_config_test config.cpp ../src/config/ConfigProgram.cpp ../src/config/Config.cpp ../src/config/YamlConfig.c)
 target_include_directories(diftraywm_config_test PRIVATE ../src ${DIFTRAY_THIRD_PARTY}/PEGTL/include)
 target_link_libraries(diftraywm_config_test PRIVATE diftray_cyaml diftray_toml PkgConfig::WLROOTS_BUILD_DEPS)
@@ -90,3 +104,28 @@ diftraywm_target_defaults(diftraywm_config_program_test)
 diftraywm_link_exe(diftraywm_config_program_test)
 add_test(NAME diftraywm_config_program_test COMMAND diftraywm_config_program_test)
 set_tests_properties(diftraywm_config_program_test PROPERTIES TIMEOUT 10)
+
+add_executable(diftraywm_mux_test mux.cpp)
+diftraywm_target_defaults(diftraywm_mux_test)
+diftraywm_link_exe(diftraywm_mux_test)
+add_test(NAME diftraywm_mux_test COMMAND diftraywm_mux_test)
+set_tests_properties(diftraywm_mux_test PROPERTIES TIMEOUT 15)
+
+# Drives the installed binaries end to end: a real headless compositor plus the
+# real diftrayctl, over the control socket.
+add_executable(diftraywm_diftrayctl_test diftrayctl.cpp)
+diftraywm_target_defaults(diftraywm_diftrayctl_test)
+target_compile_definitions(diftraywm_diftrayctl_test PRIVATE
+  DIFTRAYCTL_BINARY="$<TARGET_FILE:diftrayctl>"
+  DIFTRAYWM_BINARY="$<TARGET_FILE:diftraywm>")
+add_dependencies(diftraywm_diftrayctl_test diftrayctl diftraywm diftraywm_test_plugin
+  diftraywm_bundled_notelets)
+add_test(NAME diftraywm_diftrayctl_test COMMAND diftraywm_diftrayctl_test)
+set_tests_properties(diftraywm_diftrayctl_test PROPERTIES TIMEOUT 120)
+
+add_executable(diftraywm_launcher_test launcher.cpp)
+diftraywm_target_defaults(diftraywm_launcher_test)
+diftraywm_link_exe(diftraywm_launcher_test)
+add_dependencies(diftraywm_launcher_test diftraywm_bundled_notelets)
+add_test(NAME diftraywm_launcher_test COMMAND diftraywm_launcher_test)
+set_tests_properties(diftraywm_launcher_test PROPERTIES TIMEOUT 15)

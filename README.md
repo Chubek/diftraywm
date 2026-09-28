@@ -24,7 +24,9 @@ cmake -S . -B build -DDOMWEAVE_BUILD_DIFTRAY=ON
 cmake --build build -j --target diftray
 ```
 
-Both `diftray` and `diftraywm` are produced.
+Both `diftray` and `diftraywm` are produced, along with `diftrayctl`, the
+control utility for a running session, and `diftrayremap`, the system-wide key
+remapper.
 
 ## Run
 
@@ -44,6 +46,69 @@ WLR_HEADLESS_OUTPUTS=1 \
 WLR_RENDERER=pixman \
 ./build/diftray
 ```
+
+## Control a running session
+
+`diftrayctl` sends Command Bar commands to a compositor that is already
+running, over a Unix control socket at
+`$XDG_RUNTIME_DIR/diftraywm-ctl-$UID.sock` (mode 0700).
+
+```sh
+./build/diftrayctl status              # session, cells, plugins, theme
+./build/diftrayctl exit-session        # leave the session for the console
+./build/diftrayctl restart-session     # re-exec the compositor in place
+./build/diftrayctl plugin-load ./x.so  # load a native plugin (dynalo)
+./build/diftrayctl extension-exec ./x.lua
+./build/diftrayctl config-open
+./build/diftrayctl source-script demo.tsc
+./build/diftrayctl --help              # every subcommand
+```
+
+`DIFTRAYWM_CONTROL_SOCKET` overrides the socket path. See
+[help/diftrayctl.1](help/diftrayctl.1) and the "Driving a running session"
+section of [GUIDE.md](GUIDE.md).
+
+## Key remapping
+
+Every key is configured in one INI file, in `keyd`'s format. The config file
+only names it; nothing about keys lives in `diftray.conf`.
+
+```ini
+general {
+  keymap = keymap.ini
+}
+```
+
+```ini
+[init]
+prefix = <C-g>              # the remapping layer's chord
+action = Trigger(profile-1)
+
+[meta]
+prefix = <C-q>              # the compositor's Meta prefix
+
+[default]
+<C-x> = Diftray(workspace 3)  # a Command Bar command
+<C-z> = Typeout(git status)   # type into the focused cell
+<C-m> = Ignore()               # swallow the key
+```
+
+```sh
+./build/diftrayctl keymap-show     # the loaded keymap and its bindings
+./build/diftrayctl keymap-reload   # re-read it
+./build/diftrayctl keymap-check ./new.ini   # validate without adopting
+```
+
+The compositor applies the file to the keys it already reads, which needs no
+privileges. `diftrayremap` applies the same file to the whole machine, using
+libudev to find the keyboards, libevdev to read them, and uinput to republish
+them — so the remapping also reaches a TTY or another session. That needs
+access to `/dev/input/event*` and `/dev/uinput`, so it is a separate program
+rather than a compositor mode; run `diftrayremap check` first to see whether
+this machine can do it, and why not if it cannot.
+
+See [help/keymap.1](help/keymap.1), [help/diftrayremap.1](help/diftrayremap.1)
+and the "Key remapping" section of [GUIDE.md](GUIDE.md).
 
 ## Bindings
 

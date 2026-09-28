@@ -17,7 +17,11 @@ function(add_libsh_api_example name)
     set(source "${CMAKE_CURRENT_LIST_DIR}/${name}.cpp")
     set(extra_sources)
     if(ARG_WITH_PARSER)
-        list(APPEND extra_sources "${LIBSH_ROOT}/cli/libsh-parse.cpp")
+        # The front end is two translation units: the lexer and the parser.
+        list(APPEND extra_sources
+            "${LIBSH_ROOT}/cli/lsh-lex.cpp"
+            "${LIBSH_ROOT}/cli/libsh-parse.cpp"
+        )
     endif()
 
     add_executable(${name} ${source} ${extra_sources})

@@ -60,6 +60,20 @@ bool parse_int(std::string_view value, int &out) {
   return result.ec == std::errc() && result.ptr == value.data() + value.size();
 }
 
+// The DSL and YAML deliver every setting as text and TOML booleans are
+// normalised above, so booleans are spelled the same way in all three formats.
+bool parse_bool(std::string_view value, bool &out) {
+  if (value == "true" || value == "yes" || value == "on" || value == "1") {
+    out = true;
+    return true;
+  }
+  if (value == "false" || value == "no" || value == "off" || value == "0") {
+    out = false;
+    return true;
+  }
+  return false;
+}
+
 bool parse_color(std::string_view value, float out[4]) {
   if (value.size() != 7 && value.size() != 9) {
     return false;
@@ -137,6 +151,11 @@ bool apply(const Settings &settings, CompositorConfig &config, std::string &erro
         error = "status_bar_height must be a positive integer";
         return false;
       }
+    } else if (key == "launcher_bar_height") {
+      if (!parse_int(value, config.launcher_bar_height) || config.launcher_bar_height < 1) {
+        error = "launcher_bar_height must be a positive integer";
+        return false;
+      }
     } else if (key == "border_color") {
       if (!parse_color(value, config.border_color)) {
         error = "border_color must be #RRGGBB or #RRGGBBAA";
@@ -150,6 +169,16 @@ bool apply(const Settings &settings, CompositorConfig &config, std::string &erro
     } else if (key == "command_bar_color") {
       if (!parse_color(value, config.command_bar_color)) {
         error = "command_bar_color must be #RRGGBB or #RRGGBBAA";
+        return false;
+      }
+    } else if (key == "launcher_bar_color") {
+      if (!parse_color(value, config.launcher_bar_color)) {
+        error = "launcher_bar_color must be #RRGGBB or #RRGGBBAA";
+        return false;
+      }
+    } else if (key == "launcher_locked") {
+      if (!parse_bool(value, config.launcher_locked)) {
+        error = "launcher_locked must be true or false";
         return false;
       }
     } else if (key == "shell") {
@@ -179,22 +208,8 @@ bool apply(const Settings &settings, CompositorConfig &config, std::string &erro
       config.theme = value;
     } else if (key == "help_path") {
       config.help_path = value;
-    } else if (key == "help_key_close") {
-      config.help_key_close = value;
-    } else if (key == "help_key_search") {
-      config.help_key_search = value;
-    } else if (key == "help_key_next") {
-      config.help_key_next = value;
-    } else if (key == "help_key_previous") {
-      config.help_key_previous = value;
-    } else if (key == "help_key_page_down") {
-      config.help_key_page_down = value;
-    } else if (key == "help_key_page_up") {
-      config.help_key_page_up = value;
-    } else if (key == "help_key_line_down") {
-      config.help_key_line_down = value;
-    } else if (key == "help_key_line_up") {
-      config.help_key_line_up = value;
+    } else if (key == "keymap") {
+      config.keymap = value;
     } else {
       error = "unknown setting: " + key;
       return false;
@@ -254,8 +269,15 @@ bool parse_toml(std::string source, Settings &settings, std::vector<Settings> &m
       if (value.ok) { text = value.u.s; std::free(value.u.s); }
       else {
         value = toml_int_in(table, key);
-        if (!value.ok) { error = "expected string or integer: " + std::string(key); return false; }
-        text = std::to_string(value.u.i);
+        if (!value.ok) {
+          // Booleans arrive unquoted in TOML, so they need their own read
+          // before the field can be rejected as an unsupported type.
+          const auto flag = toml_bool_in(table, key);
+          if (flag.ok) { text = flag.u.b ? "true" : "false"; }
+          else { error = "expected string, integer or boolean: " + std::string(key); return false; }
+        } else {
+          text = std::to_string(value.u.i);
+        }
       }
       if (!add(settings, key, std::move(text), error)) return false;
     }

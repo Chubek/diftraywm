@@ -52,6 +52,11 @@ struct diftray_wayland_runtime {
   struct wlr_scene_rect *command_bar;
   struct wlr_scene_buffer *command_bar_text;
   struct diftray_pixel_buffer *command_bar_buffer;
+  struct wlr_scene_rect *launcher_bar;
+  struct wlr_scene_buffer *launcher_bar_text;
+  struct diftray_pixel_buffer *launcher_bar_buffer;
+  bool launcher_bar_visible;
+  char *launcher_bar_text_copy;
   struct wlr_scene_buffer *status_text;
   struct diftray_pixel_buffer *status_buffer;
   struct wl_listener new_output;
@@ -284,6 +289,10 @@ static void layout_overlay(struct diftray_wayland_runtime *runtime) {
   const int bar_height = runtime->style.command_bar_height;
   const int width = runtime->output_width > 0 ? runtime->output_width : 1920;
   const int height = runtime->output_height > 0 ? runtime->output_height : 1080;
+  const int status_height = runtime->style.status_bar_height;
+  const int launcher_height = runtime->style.launcher_bar_height > 0
+                                   ? runtime->style.launcher_bar_height
+                                   : 32;
   struct wlr_box bounds;
   wlr_output_layout_get_box(runtime->output_layout, NULL, &bounds);
   wlr_scene_rect_set_size(runtime->background, bounds.width, bounds.height);
@@ -297,6 +306,18 @@ static void layout_overlay(struct diftray_wayland_runtime *runtime) {
   }
   if (runtime->status_text) {
     wlr_scene_node_set_position(&runtime->status_text->node, runtime->output_x, runtime->output_y);
+  }
+  // The launcher taskbar sits directly under the status bar. It is an overlay
+  // rather than a layout participant, so locking it never resizes a cell's PTY.
+  const int launcher_y = runtime->output_y + status_height;
+  if (runtime->launcher_bar) {
+    wlr_scene_rect_set_size(runtime->launcher_bar, width, launcher_height);
+    wlr_scene_node_set_position(&runtime->launcher_bar->node, runtime->output_x,
+                                launcher_y);
+  }
+  if (runtime->launcher_bar_text) {
+    wlr_scene_node_set_position(&runtime->launcher_bar_text->node,
+                                runtime->output_x, launcher_y);
   }
 }
 
@@ -780,6 +801,42 @@ static void refresh_command_bar(struct diftray_wayland_runtime *runtime) {
   layout_overlay(runtime);
 }
 
+static void refresh_launcher_bar(struct diftray_wayland_runtime *runtime) {
+  if (!runtime->launcher_bar) {
+    return;
+  }
+  wlr_scene_node_set_enabled(&runtime->launcher_bar->node,
+                             runtime->launcher_bar_visible);
+  const int width = runtime->output_width > 0 ? runtime->output_width : 800;
+  const int height = runtime->style.launcher_bar_height > 0
+                         ? runtime->style.launcher_bar_height
+                         : 32;
+  if (!runtime->launcher_bar_buffer ||
+      runtime->launcher_bar_buffer->base.width != width ||
+      runtime->launcher_bar_buffer->base.height != height) {
+    if (runtime->launcher_bar_buffer) {
+      wlr_buffer_drop(&runtime->launcher_bar_buffer->base);
+    }
+    runtime->launcher_bar_buffer = pixel_buffer_create(width, height);
+    if (!runtime->launcher_bar_text) {
+      runtime->launcher_bar_text =
+          wlr_scene_buffer_create(runtime->overlay_tree, NULL);
+    }
+  }
+  if (!runtime->launcher_bar_buffer || !runtime->launcher_bar_text) {
+    return;
+  }
+  render_chrome_text(runtime, runtime->launcher_bar_buffer,
+                     runtime->launcher_bar_text_copy,
+                     runtime->style.launcher_bar_color,
+                     runtime->style.border_color);
+  wlr_scene_buffer_set_buffer(runtime->launcher_bar_text,
+                              &runtime->launcher_bar_buffer->base);
+  wlr_scene_node_set_enabled(&runtime->launcher_bar_text->node,
+                             runtime->launcher_bar_visible);
+  layout_overlay(runtime);
+}
+
 static void refresh_status_line(struct diftray_wayland_runtime *runtime) {
   const int width = runtime->output_width > 0 ? runtime->output_width : 800;
   const int height = runtime->style.status_bar_height;
@@ -855,6 +912,12 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
       runtime->overlay_tree, 1920, runtime->style.command_bar_height,
       runtime->style.command_bar_color);
   wlr_scene_node_set_enabled(&runtime->command_bar->node, false);
+  runtime->launcher_bar = wlr_scene_rect_create(
+      runtime->overlay_tree, 1920,
+      runtime->style.launcher_bar_height > 0 ? runtime->style.launcher_bar_height
+                                             : 32,
+      runtime->style.launcher_bar_color);
+  wlr_scene_node_set_enabled(&runtime->launcher_bar->node, false);
   wlr_scene_node_set_enabled(&runtime->gcursor_tree->node, false);
   runtime->xdg_shell = wlr_xdg_shell_create(display, 3);
   runtime->seat = wlr_seat_create(display, "seat0");
@@ -1152,8 +1215,12 @@ void diftray_wayland_runtime_set_style(struct diftray_wayland_runtime *runtime,
   runtime->style = *style;
   wlr_scene_rect_set_color(runtime->background, style->background_color);
   wlr_scene_rect_set_color(runtime->command_bar, style->command_bar_color);
+  if (runtime->launcher_bar) {
+    wlr_scene_rect_set_color(runtime->launcher_bar, style->launcher_bar_color);
+  }
   layout_overlay(runtime);
   refresh_command_bar(runtime);
+  refresh_launcher_bar(runtime);
   refresh_status_line(runtime);
 }
 
@@ -1168,6 +1235,17 @@ void diftray_wayland_runtime_set_command_bar(
   refresh_command_bar(runtime);
 }
 
+void diftray_wayland_runtime_set_launcher_bar(
+    struct diftray_wayland_runtime *runtime, bool visible, const char *text) {
+  if (!runtime) {
+    return;
+  }
+  runtime->launcher_bar_visible = visible;
+  free(runtime->launcher_bar_text_copy);
+  runtime->launcher_bar_text_copy = strdup(text ? text : "");
+  refresh_launcher_bar(runtime);
+}
+
 void diftray_wayland_runtime_set_status_line(
     struct diftray_wayland_runtime *runtime, const char *text) {
   if (!runtime) {
@@ -1176,6 +1254,32 @@ void diftray_wayland_runtime_set_status_line(
   free(runtime->status_line);
   runtime->status_line = strdup(text ? text : "");
   refresh_status_line(runtime);
+}
+
+struct xkb_keymap *diftray_wayland_runtime_seat_keymap(
+    struct diftray_wayland_runtime *runtime) {
+  struct wlr_keyboard *keyboard;
+  if (!runtime || !runtime->seat) {
+    return NULL;
+  }
+  keyboard = wlr_seat_get_keyboard(runtime->seat);
+  if (!keyboard) {
+    return NULL;
+  }
+  return keyboard->keymap;
+}
+
+struct xkb_state *diftray_wayland_runtime_seat_state(
+    struct diftray_wayland_runtime *runtime) {
+  struct wlr_keyboard *keyboard;
+  if (!runtime || !runtime->seat) {
+    return NULL;
+  }
+  keyboard = wlr_seat_get_keyboard(runtime->seat);
+  if (!keyboard) {
+    return NULL;
+  }
+  return keyboard->xkb_state;
 }
 
 static void disconnect_listener(struct wl_listener *listener) {
@@ -1208,6 +1312,9 @@ void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime) {
   if (runtime->command_bar_buffer) {
     wlr_buffer_drop(&runtime->command_bar_buffer->base);
   }
+  if (runtime->launcher_bar_buffer) {
+    wlr_buffer_drop(&runtime->launcher_bar_buffer->base);
+  }
   if (runtime->status_buffer) {
     wlr_buffer_drop(&runtime->status_buffer->base);
   }
@@ -1233,6 +1340,7 @@ void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime) {
     wlr_renderer_destroy(runtime->renderer);
   }
   free(runtime->command_bar_text_copy);
+  free(runtime->launcher_bar_text_copy);
   free(runtime->status_line);
   free(runtime);
 }

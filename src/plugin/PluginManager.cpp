@@ -112,6 +112,31 @@ bool PluginManager::load(const std::string &path) {
     return false;
   }
 }
+bool PluginManager::unload(const std::string &path) {
+  if (notifying_) { error_ = "cannot unload a plugin during an event"; return false; }
+  if (path.empty()) { error_ = "plugin path is empty"; return false; }
+  std::error_code ec;
+  // Resolve the same way load() does, so "unload ./plugin.so" finds the
+  // canonical entry the manager recorded.
+  const auto canonical = std::filesystem::canonical(path, ec).string();
+  if (ec) { error_ = ec.message(); return false; }
+  const auto it = std::find(loaded_.begin(), loaded_.end(), canonical);
+  if (it == loaded_.end()) { error_ = "plugin is not loaded: " + canonical; return false; }
+  const auto index = static_cast<std::size_t>(std::distance(loaded_.begin(), it));
+  // plugins_ and loaded_ are appended in lockstep.
+  if (index >= plugins_.size()) { error_ = "plugin table is inconsistent"; return false; }
+  auto plugin = std::move(plugins_[index]);
+  {
+    Api::Context context(this, plugin.get());
+    if (plugin->cleanup) { try { plugin->cleanup(); } catch (...) {} }
+    if (bar_) bar_->unregister_owner(plugin.get());
+  }
+  plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(index));
+  loaded_.erase(it);
+  error_.clear();
+  return true;
+}
+
 void PluginManager::unload_all() {
   if (notifying_) return;
   for (auto it = plugins_.rbegin(); it != plugins_.rend(); ++it) {

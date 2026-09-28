@@ -26,6 +26,10 @@ public:
                         std::optional<CommandScope> required_scope = {});
   void unregister_command(const std::string &name, const void *owner);
   void unregister_owner(const void *owner);
+  // Scope a registered extension command requires, or nullopt when the leading
+  // word is unknown, is a builtin, or is unrestricted. Lets out-of-band callers
+  // pick a scope instead of guessing and re-dispatching.
+  std::optional<CommandScope> required_scope(const std::string &command) const;
 
   std::string input_buffer;
   bool visible = false;

@@ -1,6 +1,13 @@
+#include "lsh-lex.hpp"
+
 #include "LibShell.hpp"
 
-#include <cctype>
+// Redirection constructors live in the DSL layer.
+#include "lsh/DSL.hpp"
+
+#include <deque>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -10,547 +17,871 @@ namespace lsh::cli {
 
 namespace {
 
-enum class TokenKind {
-    word,
-    pipe,
-    and_if,
-    or_if,
-    sequence,
-    background,
-    redirect_in,
-    redirect_out,
-    redirect_append,
-    redirect_err,
-    redirect_err_append,
-};
+using TokenList = std::deque<Token>;
 
-struct Token {
-    TokenKind kind {TokenKind::word};
-    std::vector<Expansion> fragments; // populated for word tokens
-    std::string text;                 // operator label or fallback text
-};
-
-Token token(TokenKind kind) {
-    Token result;
-    result.kind = kind;
-    return result;
+[[nodiscard]] bool is_digits(std::string_view text) {
+    return !text.empty() && text.find_first_not_of("0123456789") == std::string_view::npos;
 }
 
-Token word_token(std::vector<Expansion> fragments) {
-    Token result;
-    result.kind = TokenKind::word;
-    result.fragments = std::move(fragments);
-    return result;
+[[nodiscard]] std::string literal_of(const Token& token) {
+    std::string text;
+    for (const Expansion& fragment : token.fragments) {
+        text += fragment.text;
+    }
+    return text;
 }
 
-// Concatenate the literal text of a word's fragments. Used where a structured
-// target (e.g. a redirection path) must collapse to a single path string;
-// expansion is the runtime's job, not the tokenizer's.
-std::string word_text(const std::vector<Expansion>& fragments) {
-    std::string out;
-    for (const Expansion& fragment : fragments) {
-        out += fragment.text;
+// `NAME=value` as a single token. The lexer coalesces adjacent literal
+// characters, so `FOO=bar` arrives as one raw fragment while `FOO=$x` arrives as
+// a raw head followed by expansions. Both forms are accepted; anything quoted
+// is an ordinary word.
+[[nodiscard]] std::optional<std::size_t> assignment_split(const Token& token) {
+    if (token.quoted || token.fragments.empty()) {
+        return std::nullopt;
     }
-    return out;
+    const Expansion& head = token.fragments.front();
+    if (head.kind != ExpansionKind::raw) {
+        return std::nullopt;
+    }
+    const auto eq = head.text.find('=');
+    if (eq == std::string::npos || !valid_variable_name(std::string_view(head.text).substr(0, eq))) {
+        return std::nullopt;
+    }
+    return eq;
 }
 
-bool is_name_start(char ch) { return std::isalpha(static_cast<unsigned char>(ch)) || ch == '_'; }
-bool is_name_char(char ch) { return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; }
-
-// A word is built as an ordered list of typed Expansion fragments so the
-// runtime expander receives the same structure the DSL produces, instead of a
-// collapsed raw string. Literal runs are tagged by the quoting context that
-// produced them (raw / single_quoted / double_quoted).
-struct WordBuilder {
-    std::vector<Expansion> fragments;
-    std::string pending;
-    ExpansionKind lit_kind {ExpansionKind::raw};
-    bool has_pending {false};
-
-    void set_kind(ExpansionKind kind) {
-        if (has_pending && lit_kind != kind) {
-            flush();
-        }
-        lit_kind = kind;
+[[nodiscard]] bool is_assignment_token(const Token& token) {
+    const auto split = assignment_split(token);
+    if (!split) {
+        return false;
     }
-
-    void push_char(char ch) {
-        pending.push_back(ch);
-        has_pending = true;
-    }
-
-    void flush() {
-        if (has_pending) {
-            fragments.push_back(Expansion {.kind = lit_kind, .text = std::move(pending), .field_splitting = false});
-            pending.clear();
-            has_pending = false;
-        }
-    }
-
-    void push_expansion(ExpansionKind kind, std::string text, bool field_splitting) {
-        flush();
-        fragments.push_back(Expansion {.kind = kind, .text = std::move(text), .field_splitting = field_splitting});
-    }
-
-    std::vector<Expansion> finish() {
-        flush();
-        return std::move(fragments);
-    }
-};
-
-// Scan a command/arithmetic substitution body starting at `start` (the char
-// after the opening parenthesis(s)). Respects quotes and nested parentheses.
-// `closer` is ")" for $(...) and "))" for $((...)). Returns the body text and
-// advances `index` past the closer.
-Result<std::string> scan_substitution(std::string_view line, std::size_t start, std::string_view closer, std::size_t& end) {
-    std::string body;
-    bool single_quote = false;
-    bool double_quote = false;
-    bool escaped = false;
-    int depth = 1; // we are inside one unclosed '('
-    std::size_t index = start;
-    for (; index < line.size(); ++index) {
-        char ch = line[index];
-        if (escaped) {
-            body.push_back(ch);
-            escaped = false;
-            continue;
-        }
-        if (ch == '\\' && !single_quote) {
-            escaped = true;
-            body.push_back(ch);
-            continue;
-        }
-        if (ch == '\'' && !double_quote) {
-            single_quote = !single_quote;
-            body.push_back(ch);
-            continue;
-        }
-        if (ch == '"' && !single_quote) {
-            double_quote = !double_quote;
-            body.push_back(ch);
-            continue;
-        }
-        if (single_quote || double_quote) {
-            body.push_back(ch);
-            continue;
-        }
-        if (ch == '(') {
-            ++depth;
-            body.push_back(ch);
-            continue;
-        }
-        if (ch == ')') {
-            --depth;
-            if (depth == 0) {
-                // Found the closing ')'. For arithmetic, expect a second ')'.
-                std::size_t consumed = 1;
-                if (closer.size() == 2) {
-                    if (index + 1 >= line.size() || line[index + 1] != ')') {
-                        return Diagnostic {ErrorCode::bad_expansion, "unterminated arithmetic expansion", {}};
-                    }
-                    consumed = 2;
-                }
-                end = index + consumed;
-                return body;
-            }
-            body.push_back(ch);
-            continue;
-        }
-        body.push_back(ch);
-    }
-    return Diagnostic {ErrorCode::bad_expansion, "unterminated command substitution", {}};
+    // A bare `NAME=` with nothing after it is still an assignment; a value made
+    // only of later fragments is too. Anything else is a word.
+    return true;
 }
 
-// Parse a `$...` expansion beginning at line[index] == '$', advancing `index`
-// past the expansion and appending a typed fragment to `word`. `field_splitting`
-// is true for unquoted expansions (POSIX field splitting applies) and false
-// inside double quotes.
-Result<void> parse_expansion(std::string_view line, std::size_t& index, WordBuilder& word, bool field_splitting) {
-    std::size_t pos = index + 1;
-    if (pos >= line.size()) {
-        word.set_kind(field_splitting ? ExpansionKind::raw : ExpansionKind::double_quoted);
-        word.push_char('$');
-        index = pos;
-        return {};
+[[nodiscard]] ir::Assignment assignment_of(const Token& token) {
+    ir::Assignment assignment;
+    const std::size_t eq = *assignment_split(token);
+    const Expansion& head = token.fragments.front();
+    assignment.name = head.text.substr(0, eq);
+
+    if (head.text.size() > eq + 1) {
+        assignment.value.fragments.push_back(make_expansion(ExpansionKind::raw, head.text.substr(eq + 1)));
     }
-    const char next = line[pos];
-    if (next == '(') {
-        if (pos + 1 < line.size() && line[pos + 1] == '(') {
-            std::size_t end = 0;
-            auto body = scan_substitution(line, pos + 2, "))", end);
-            if (!body) {
-                return body.error();
-            }
-            word.push_expansion(ExpansionKind::arithmetic, std::move(body).value(), false);
-            index = end;
-            return {};
-        }
-        std::size_t end = 0;
-        auto body = scan_substitution(line, pos + 1, ")", end);
-        if (!body) {
-            return body.error();
-        }
-        word.push_expansion(ExpansionKind::command, std::move(body).value(), field_splitting);
-        index = end;
-        return {};
+    for (std::size_t index = 1; index < token.fragments.size(); ++index) {
+        assignment.value.fragments.push_back(token.fragments[index]);
     }
-    if (next == '{') {
-        std::size_t name_start = pos + 1;
-        std::size_t name_end = name_start;
-        while (name_end < line.size() && line[name_end] != '}') {
-            ++name_end;
-        }
-        if (name_end >= line.size()) {
-            return Diagnostic {ErrorCode::bad_expansion, "unterminated ${...} expansion", {}};
-        }
-        std::string name(line.substr(name_start, name_end - name_start));
-        word.push_expansion(ExpansionKind::variable, std::move(name), field_splitting);
-        index = name_end + 1;
-        return {};
+    if (assignment.value.fragments.empty()) {
+        assignment.value.fragments.push_back(make_expansion(ExpansionKind::raw));
     }
-    if (is_name_start(next)) {
-        // pos indexes the first name character (the char after '$'); scan the
-        // rest of the identifier and capture the full name [pos, name_end).
-        std::size_t name_end = pos + 1;
-        while (name_end < line.size() && is_name_char(line[name_end])) {
-            ++name_end;
-        }
-        std::string name(line.substr(pos, name_end - pos));
-        word.push_expansion(ExpansionKind::variable, std::move(name), field_splitting);
-        index = name_end;
-        return {};
-    }
-    // Bare '$' — treat as a literal.
-    word.set_kind(field_splitting ? ExpansionKind::raw : ExpansionKind::double_quoted);
-    word.push_char('$');
-    index = pos;
-    return {};
+    return assignment;
 }
 
-Result<std::vector<Token>> tokenize(std::string_view line) {
-    std::vector<Token> tokens;
-    WordBuilder word;
-    bool in_word = false;
-    bool single_quote = false;
-    bool double_quote = false;
-    bool escaped = false;
-
-    auto flush_word = [&] {
-        if (in_word) {
-            tokens.push_back(word_token(word.finish()));
-            in_word = false;
-        }
-    };
-
-    auto start_word = [&] {
-        if (!in_word) {
-            in_word = true;
-        }
-    };
-
-    std::size_t index = 0;
-    while (index < line.size()) {
-        const char ch = line[index];
-        if (escaped) {
-            word.set_kind(double_quote ? ExpansionKind::double_quoted : ExpansionKind::raw);
-            word.push_char(ch);
-            start_word();
-            escaped = false;
-            ++index;
-            continue;
-        }
-        if (ch == '\\' && !single_quote) {
-            if (double_quote) {
-                // POSIX: inside "...", '\' escapes only $ ` " and \; before any
-                // other character the backslash is preserved literally (so
-                // printf "%s\n" retains \n for the program to interpret).
-                if (index + 1 < line.size()) {
-                    const char escaped_ch = line[index + 1];
-                    if (escaped_ch == '$' || escaped_ch == '`'
-                        || escaped_ch == '"' || escaped_ch == '\\') {
-                        word.set_kind(ExpansionKind::double_quoted);
-                        word.push_char(escaped_ch);
-                        start_word();
-                        index += 2;
-                        continue;
-                    }
-                }
-                word.set_kind(ExpansionKind::double_quoted);
-                word.push_char('\\');
-                start_word();
-                ++index;
-                continue;
-            }
-            escaped = true;
-            ++index;
-            continue;
-        }
-        if (ch == '\'' && !double_quote) {
-            single_quote = !single_quote;
-            word.set_kind(ExpansionKind::single_quoted);
-            start_word();
-            ++index;
-            continue;
-        }
-        if (ch == '"' && !single_quote) {
-            double_quote = !double_quote;
-            word.set_kind(ExpansionKind::double_quoted);
-            start_word();
-            ++index;
-            continue;
-        }
-        if (single_quote) {
-            word.push_char(ch);
-            ++index;
-            continue;
-        }
-        if (double_quote) {
-            if (ch == '$') {
-                // parse_expansion_into handles $... inside double quotes (no split).
-                auto parsed = parse_expansion(line, index, word, /*field_splitting=*/false);
-                if (!parsed) {
-                    return parsed.error();
-                }
-                start_word();
-                continue;
-            }
-            word.push_char(ch);
-            ++index;
-            continue;
-        }
-
-        // Unquoted context.
-        if (std::isspace(static_cast<unsigned char>(ch))) {
-            flush_word();
-            ++index;
-            continue;
-        }
-        if (ch == '#' && !in_word) {
-            break;
-        }
-        if (ch == '$') {
-            auto parsed = parse_expansion(line, index, word, /*field_splitting=*/true);
-            if (!parsed) {
-                return parsed.error();
-            }
-            start_word();
-            continue;
-        }
-        if (ch == '&' && index + 1 < line.size() && line[index + 1] == '&') {
-            flush_word();
-            tokens.push_back(token(TokenKind::and_if));
-            index += 2;
-            continue;
-        }
-        if (ch == '|' && index + 1 < line.size() && line[index + 1] == '|') {
-            flush_word();
-            tokens.push_back(token(TokenKind::or_if));
-            index += 2;
-            continue;
-        }
-        if (ch == '|') {
-            flush_word();
-            tokens.push_back(token(TokenKind::pipe));
-            ++index;
-            continue;
-        }
-        if (ch == '&') {
-            flush_word();
-            tokens.push_back(token(TokenKind::background));
-            ++index;
-            continue;
-        }
-        if (ch == ';') {
-            flush_word();
-            tokens.push_back(token(TokenKind::sequence));
-            ++index;
-            continue;
-        }
-        if (ch == '<') {
-            flush_word();
-            tokens.push_back(token(TokenKind::redirect_in));
-            ++index;
-            continue;
-        }
-        // '2>' is a stderr redirection only at a word boundary, so the literal
-        // word "a2>file" is not mis-split.
-        if (ch == '2' && !in_word && index + 1 < line.size() && line[index + 1] == '>') {
-            flush_word();
-            if (index + 2 < line.size() && line[index + 2] == '>') {
-                tokens.push_back(token(TokenKind::redirect_err_append));
-                index += 3;
-            } else {
-                tokens.push_back(token(TokenKind::redirect_err));
-                index += 2;
-            }
-            continue;
-        }
-        if (ch == '>') {
-            flush_word();
-            if (index + 1 < line.size() && line[index + 1] == '>') {
-                tokens.push_back(token(TokenKind::redirect_append));
-                index += 2;
-            } else {
-                tokens.push_back(token(TokenKind::redirect_out));
-                ++index;
-            }
-            continue;
-        }
-
-        word.set_kind(ExpansionKind::raw);
-        word.push_char(ch);
-        start_word();
-        ++index;
-    }
-    if (escaped || single_quote || double_quote) {
-        return Diagnostic {ErrorCode::bad_expansion, "unterminated quote or escape", {}};
-    }
-    flush_word();
-    return tokens;
-}
-
+// Recursive-descent parser for the POSIX shell grammar:
+//
+//   program   := linebreak complete_commands
+//   list      := and_or { separator_op and_or }
+//   and_or    := pipeline { ('&&'|'||') linebreak pipeline }
+//   pipeline  := '!'? command { '|' linebreak? command }
+//   command   := brace_group | subshell | for_clause | case_clause
+//              | if_clause | while_clause | until_clause | function_def
+//              | simple_command
+//
+// The parser produces IR only: it never expands, resolves, or executes.
+// Expansion rules live in the Expander, execution policy in the Executor.
 class Parser {
 public:
-    explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+    explicit Parser(TokenList tokens) : tokens_(std::move(tokens)) {}
 
     Result<ir::Program> parse_program() {
-        auto expr = parse_sequence();
-        if (!expr) {
-            return expr.error();
+        skip_newlines();
+        if (at_end()) {
+            return failure(ErrorCode::empty_argv, "empty command");
         }
+        auto expression = parse_list();
+        if (!expression) {
+            return expression.error();
+        }
+        skip_newlines();
         if (!at_end()) {
-            return Diagnostic {ErrorCode::invalid_graph, "unexpected token after command", peek().text};
+            return failure(ErrorCode::syntax_error, "unexpected token after the end of the command", peek().text);
         }
-        return ir::Program {expr.value()};
+        return ir::Program {expression.value()};
     }
 
 private:
-    Result<ir::NodePtr> parse_sequence() {
-        auto left = parse_pipeline();
-        if (!left) {
-            return left.error();
-        }
-        while (match(TokenKind::sequence) || match(TokenKind::and_if) || match(TokenKind::or_if) || match(TokenKind::background)) {
-            const TokenKind connective_token = previous().kind;
-            if (connective_token == TokenKind::background) {
-                // Background is acknowledged but treated as a sequence here;
-                // true job control is a runtime/executor concern.
-                continue;
-            }
-            auto right = parse_pipeline();
-            if (!right) {
-                return right.error();
-            }
-            Connective connective = Connective::sequence;
-            if (connective_token == TokenKind::and_if) {
-                connective = Connective::and_if;
-            } else if (connective_token == TokenKind::or_if) {
-                connective = Connective::or_if;
-            }
-            left = ir::node(ir::Sequence {.left = left.value(), .right = right.value(), .connective = connective}, "cli-sequence");
-        }
-        return left;
-    }
+    // ---- token helpers ----------------------------------------------------
 
-    Result<ir::NodePtr> parse_pipeline() {
-        std::vector<ir::Command> commands;
-        auto command = parse_command();
-        if (!command) {
-            return command.error();
-        }
-        commands.push_back(std::move(command).value());
-        while (match(TokenKind::pipe)) {
-            auto next = parse_command();
-            if (!next) {
-                return next.error();
-            }
-            commands.push_back(std::move(next).value());
-        }
-        if (commands.size() == 1) {
-            return ir::command(std::move(commands.front()), "cli-command");
-        }
-        return ir::node(ir::Pipeline {.commands = std::move(commands)}, "cli-pipeline");
+    // The stream is terminated by an explicit end token so peek() is always
+    // well defined; at_end() means "reached it".
+    [[nodiscard]] bool at_end() const noexcept {
+        return current_ >= tokens_.size() || peek().kind == TokenKind::end;
     }
-
-    Result<ir::Command> parse_command() {
-        ir::Command command;
-        while (!at_end()) {
-            if (peek().kind == TokenKind::word) {
-                if (peek().fragments.empty()) {
-                    return Diagnostic {ErrorCode::empty_argv, "empty word", {}};
-                }
-                Argument argument;
-                argument.fragments = advance().fragments;
-                command.argv.push_back(std::move(argument));
-                continue;
-            }
-            if (is_redirect(peek().kind)) {
-                const TokenKind kind = advance().kind;
-                if (at_end() || peek().kind != TokenKind::word) {
-                    return Diagnostic {ErrorCode::invalid_redirection, "redirection requires a path", {}};
-                }
-                const std::string path = word_text(advance().fragments);
-                command.redirections.push_back(make_redirection(kind, path));
-                continue;
-            }
-            break;
-        }
-        if (command.argv.empty()) {
-            return Diagnostic {ErrorCode::empty_argv, "expected command", {}};
-        }
-        return command;
+    [[nodiscard]] const Token& peek(std::size_t ahead = 0) const {
+        const std::size_t index = current_ + ahead;
+        return index < tokens_.size() ? tokens_[index] : tokens_.back();
     }
+    const Token& advance() { return at_end() ? tokens_.back() : tokens_[current_++]; }
 
-    static bool is_redirect(TokenKind kind) {
-        return kind == TokenKind::redirect_in || kind == TokenKind::redirect_out || kind == TokenKind::redirect_append
-            || kind == TokenKind::redirect_err || kind == TokenKind::redirect_err_append;
+    [[nodiscard]] bool at_operator(Operator op) const {
+        return peek().kind == TokenKind::operator_token && peek().op == op;
     }
-
-    static Redirection make_redirection(TokenKind kind, std::string path) {
-        switch (kind) {
-        case TokenKind::redirect_in:
-            return in(std::move(path));
-        case TokenKind::redirect_append:
-            return append(std::move(path));
-        case TokenKind::redirect_err:
-            return err(std::move(path));
-        case TokenKind::redirect_err_append:
-            return err_append(std::move(path));
-        case TokenKind::redirect_out:
-        default:
-            return out(std::move(path));
+    [[nodiscard]] bool at_separator() const {
+        if (peek().kind == TokenKind::newline) {
+            return true;
         }
+        if (peek().kind != TokenKind::operator_token) {
+            return false;
+        }
+        return peek().op == Operator::semicolon || peek().op == Operator::amp
+            || peek().op == Operator::double_semicolon || peek().op == Operator::semicolon_and;
     }
-
-    bool match(TokenKind kind) {
-        if (at_end() || peek().kind != kind) {
+    // A reserved word, which is recognized only when the token is unquoted and
+    // spells it exactly.
+    [[nodiscard]] bool at_reserved(std::string_view text) const {
+        return peek().kind == TokenKind::word && peek().reserved && peek().text == text;
+    }
+    bool match_operator(Operator op) {
+        if (!at_operator(op)) {
             return false;
         }
         ++current_;
         return true;
     }
+    bool match_reserved(std::string_view text) {
+        if (!at_reserved(text)) {
+            return false;
+        }
+        ++current_;
+        return true;
+    }
+    void skip_newlines() {
+        while (peek().kind == TokenKind::newline) {
+            ++current_;
+        }
+    }
+    bool match_newlines() {
+        const bool any = peek().kind == TokenKind::newline;
+        skip_newlines();
+        return any;
+    }
+    // Reserved words that close the construct a list belongs to. A list ends
+    // when one of these follows a separator, so `if cmd; then ...` does not try
+    // to parse `then` as a command.
+    [[nodiscard]] bool at_clause_end() const {
+        return at_reserved("then") || at_reserved("do") || at_reserved("done") || at_reserved("esac")
+            || at_reserved("elif") || at_reserved("else") || at_reserved("fi") || at_reserved("}")
+            || at_reserved("in");
+    }
 
-    const Token& advance() { return tokens_[current_++]; }
-    [[nodiscard]] const Token& peek() const { return tokens_[current_]; }
-    [[nodiscard]] const Token& previous() const { return tokens_[current_ - 1]; }
-    [[nodiscard]] bool at_end() const noexcept { return current_ >= tokens_.size(); }
+    [[nodiscard]] bool at_list_end() const {
+        return at_end() || at_separator() || at_clause_end() || at_operator(Operator::subshell_close);
+    }
 
-    std::vector<Token> tokens_;
+    [[nodiscard]] static ir::NodePtr empty_list() {
+        // `:` is the identity command, so an empty list is a real, harmless node
+        // rather than a null pointer the validator would reject.
+        return ir::command(ir::make_command({":"}), "empty-list");
+    }
+
+    // ---- grammar ----------------------------------------------------------
+
+    // A list is one or more and_or terms joined by separators. A trailing
+    // separator (`echo a;`) is legal, and so is an empty list (`{ ; }`).
+    Result<ir::NodePtr> parse_list() {
+        skip_newlines();
+        if (at_list_end()) {
+            return empty_list();
+        }
+        auto left = parse_and_or();
+        if (!left) {
+            return left.error();
+        }
+        for (;;) {
+            const std::size_t saved = current_;
+            if (peek().kind == TokenKind::newline) {
+                skip_newlines();
+            }
+            if (!at_operator(Operator::semicolon)) {
+                current_ = saved;
+                break;
+            }
+            advance();
+            skip_newlines();
+            if (at_list_end()) {
+                break;
+            }
+            auto right = parse_and_or();
+            if (!right) {
+                return right.error();
+            }
+            ir::Sequence sequence;
+            sequence.left = left.value();
+            sequence.right = right.value();
+            sequence.connective = Connective::sequence;
+            left = ir::node(std::move(sequence), "sequence");
+        }
+        return left;
+    }
+
+    Result<ir::NodePtr> parse_and_or() {
+        auto left = parse_pipeline();
+        if (!left) {
+            return left.error();
+        }
+        for (;;) {
+            skip_newlines();
+            if (!at_operator(Operator::and_if) && !at_operator(Operator::or_if)) {
+                return left;
+            }
+            const Connective connective = at_operator(Operator::and_if) ? Connective::and_if : Connective::or_if;
+            advance();
+            skip_newlines();
+            auto right = parse_pipeline();
+            if (!right) {
+                return right.error();
+            }
+            ir::Sequence sequence;
+            sequence.left = left.value();
+            sequence.right = right.value();
+            sequence.connective = connective;
+            left = ir::node(std::move(sequence), "sequence");
+        }
+    }
+
+    Result<ir::NodePtr> parse_pipeline() {
+        bool negate = false;
+        if (at_reserved("!") && peek(1).kind == TokenKind::word) {
+            advance();
+            negate = true;
+        }
+        auto first = parse_command();
+        if (!first) {
+            return first.error();
+        }
+        if (negate) {
+            ir::Negate inversion;
+            inversion.subject = first.value();
+            return ir::node(std::move(inversion), "negate");
+        }
+
+        const auto* head = std::get_if<ir::Command>(&first.value()->value);
+        if (head == nullptr) {
+            // A compound command is not a pipeline stage in POSIX; `a | { b; }`
+            // is invalid, and reporting it here is clearer than silently
+            // dropping the pipe.
+            if (at_operator(Operator::pipe)) {
+                return failure(ErrorCode::syntax_error, "a pipeline stage must be a simple command");
+            }
+            return first;
+        }
+
+        std::vector<ir::Command> commands {*head};
+        while (match_operator(Operator::pipe)) {
+            match_newlines();
+            auto next = parse_command();
+            if (!next) {
+                return next.error();
+            }
+            const auto* command = std::get_if<ir::Command>(&next.value()->value);
+            if (command == nullptr) {
+                return failure(ErrorCode::syntax_error, "a pipeline stage must be a simple command");
+            }
+            commands.push_back(*command);
+        }
+        if (commands.size() == 1) {
+            return ir::command(commands.front(), "command");
+        }
+        ir::Pipeline pipeline;
+        pipeline.commands = std::move(commands);
+        return ir::node(std::move(pipeline), "pipeline");
+    }
+
+    Result<ir::NodePtr> parse_command() {
+        if (at_reserved("{")) {
+            return parse_brace_group();
+        }
+        if (at_reserved("if")) {
+            return parse_if();
+        }
+        if (at_reserved("while")) {
+            return parse_while(/*until=*/false);
+        }
+        if (at_reserved("until")) {
+            return parse_while(/*until=*/true);
+        }
+        if (at_reserved("for")) {
+            return parse_for();
+        }
+        if (at_reserved("case")) {
+            return parse_case();
+        }
+        if (at_reserved("function")) {
+            return parse_function_keyword();
+        }
+        if (at_reserved("}")) {
+            return failure(ErrorCode::syntax_error, "'}' without a matching '{'");
+        }
+        if (at_operator(Operator::subshell_open)) {
+            return parse_subshell();
+        }
+        // `name()` with no intervening space is a function definition: the
+        // parentheses follow the name directly.
+        if (peek().kind == TokenKind::word && !peek().quoted && !peek().reserved) {
+            const Token& open = peek(1);
+            const Token& close = peek(2);
+            if (open.kind == TokenKind::operator_token && open.op == Operator::subshell_open && close.kind == TokenKind::operator_token
+                && close.op == Operator::subshell_close) {
+                return parse_function_paren();
+            }
+        }
+        return parse_simple_command();
+    }
+
+    Result<ir::NodePtr> parse_brace_group() {
+        advance(); // '{'
+        auto body = parse_list();
+        if (!body) {
+            return body.error();
+        }
+        skip_newlines();
+        if (!match_reserved("}")) {
+            return failure(ErrorCode::syntax_error, "expected '}' to close a brace group");
+        }
+        ir::BraceGroup group;
+        group.body = body.value();
+        auto redirections = parse_redirections();
+        if (!redirections) {
+            return redirections.error();
+        }
+        group.redirections = std::move(redirections).value();
+        return ir::node(std::move(group), "brace-group");
+    }
+
+    Result<ir::NodePtr> parse_subshell() {
+        advance(); // '('
+        auto body = parse_list();
+        if (!body) {
+            return body.error();
+        }
+        skip_newlines();
+        if (!match_operator(Operator::subshell_close)) {
+            return failure(ErrorCode::syntax_error, "expected ')' to close a subshell");
+        }
+        ir::Subshell subshell;
+        subshell.body = body.value();
+        auto redirections = parse_redirections();
+        if (!redirections) {
+            return redirections.error();
+        }
+        subshell.redirections = std::move(redirections).value();
+        return ir::node(std::move(subshell), "subshell");
+    }
+
+    Result<ir::NodePtr> parse_if() {
+        advance(); // 'if'
+        auto condition = parse_list();
+        if (!condition) {
+            return condition.error();
+        }
+        skip_newlines();
+        if (!match_reserved("then")) {
+            return failure(ErrorCode::syntax_error, "expected 'then'");
+        }
+        auto body = parse_list();
+        if (!body) {
+            return body.error();
+        }
+
+        // The chain nests to the right. `else` binds to the *innermost* clause,
+        // so `if a; then ..; elif b; then ..; else ..; fi` puts the else under
+        // the elif instead of replacing the whole chain.
+        std::vector<ir::IfClause> clauses;
+        ir::IfClause root;
+        root.condition = condition.value();
+        root.body = body.value();
+        clauses.push_back(std::move(root));
+
+        for (;;) {
+            const std::size_t saved = current_;
+            skip_newlines();
+            if (match_reserved("elif")) {
+                auto nested = parse_list();
+                if (!nested) {
+                    return nested.error();
+                }
+                skip_newlines();
+                if (!match_reserved("then")) {
+                    return failure(ErrorCode::syntax_error, "expected 'then' after 'elif'");
+                }
+                auto nested_body = parse_list();
+                if (!nested_body) {
+                    return nested_body.error();
+                }
+                ir::IfClause clause;
+                clause.condition = nested.value();
+                clause.body = nested_body.value();
+                clauses.push_back(std::move(clause));
+                continue;
+            }
+            if (match_reserved("else")) {
+                auto else_body = parse_list();
+                if (!else_body) {
+                    return else_body.error();
+                }
+                clauses.back().alternative = else_body.value();
+                continue;
+            }
+            if (match_reserved("fi")) {
+                break;
+            }
+            current_ = saved;
+            return failure(ErrorCode::syntax_error, "expected 'fi' to close an if clause");
+        }
+
+        // Fold the chain from the inside out so the first condition is the root.
+        std::optional<ir::NodePtr> alternative;
+        for (std::size_t index = clauses.size(); index > 0; --index) {
+            ir::IfClause clause = std::move(clauses[index - 1]);
+            clause.alternative = alternative;
+            alternative = ir::node(std::move(clause), "if");
+        }
+        return *alternative;
+    }
+
+    Result<ir::NodePtr> parse_while(bool until) {
+        advance(); // 'while' / 'until'
+        auto condition = parse_list();
+        if (!condition) {
+            return condition.error();
+        }
+        match_newlines();
+        if (!match_reserved("do")) {
+            return failure(ErrorCode::syntax_error, "expected 'do'");
+        }
+        auto body = parse_list();
+        if (!body) {
+            return body.error();
+        }
+        match_newlines();
+        if (!match_reserved("done")) {
+            return failure(ErrorCode::syntax_error, "expected 'done'");
+        }
+        ir::WhileClause clause;
+        clause.condition = condition.value();
+        clause.body = body.value();
+        clause.until = until;
+        auto redirections = parse_redirections();
+        if (!redirections) {
+            return redirections.error();
+        }
+        clause.redirections = std::move(redirections).value();
+        return ir::node(std::move(clause), until ? "until" : "while");
+    }
+
+    Result<ir::NodePtr> parse_for() {
+        advance(); // 'for'
+        if (peek().kind != TokenKind::word || peek().reserved) {
+            return failure(ErrorCode::syntax_error, "expected a loop variable after 'for'");
+        }
+        ir::ForClause clause;
+        clause.variable = advance().text;
+
+        // `for x in a b c` and `for x do ... done` (which iterates "$@").
+        const std::size_t saved = current_;
+        skip_newlines();
+        if (match_reserved("in")) {
+            skip_newlines();
+            while (peek().kind == TokenKind::word && !peek().reserved) {
+                clause.words.push_back(Argument {advance().fragments});
+            }
+        } else {
+            current_ = saved;
+        }
+        skip_newlines();
+        match_operator(Operator::semicolon);
+        skip_newlines();
+        if (!match_reserved("do")) {
+            return failure(ErrorCode::syntax_error, "expected 'do'");
+        }
+        auto body = parse_list();
+        if (!body) {
+            return body.error();
+        }
+        match_newlines();
+        if (!match_reserved("done")) {
+            return failure(ErrorCode::syntax_error, "expected 'done'");
+        }
+        clause.body = body.value();
+        auto redirections = parse_redirections();
+        if (!redirections) {
+            return redirections.error();
+        }
+        clause.redirections = std::move(redirections).value();
+        return ir::node(std::move(clause), "for");
+    }
+
+    Result<ir::NodePtr> parse_case() {
+        advance(); // 'case'
+        if (peek().kind != TokenKind::word) {
+            return failure(ErrorCode::syntax_error, "expected a word after 'case'");
+        }
+        ir::CaseClause clause;
+        clause.subject = Argument {advance().fragments};
+        skip_newlines();
+        if (!match_reserved("in")) {
+            return failure(ErrorCode::syntax_error, "expected 'in' after the case subject");
+        }
+        skip_newlines();
+
+        std::vector<ir::CaseItem> items;
+        std::optional<ir::CaseItem> default_item;
+        for (;;) {
+            skip_newlines();
+            if (match_reserved("esac")) {
+                break;
+            }
+            if (at_end()) {
+                return failure(ErrorCode::syntax_error, "unterminated case clause");
+            }
+
+            ir::CaseItem item;
+            if (at_operator(Operator::subshell_open)) {
+                advance();
+            }
+            for (;;) {
+                if (peek().kind != TokenKind::word) {
+                    return failure(ErrorCode::syntax_error, "expected a case pattern");
+                }
+                item.patterns.push_back(Argument {advance().fragments});
+                if (match_operator(Operator::pipe)) {
+                    continue;
+                }
+                break;
+            }
+            if (!match_operator(Operator::subshell_close)) {
+                return failure(ErrorCode::syntax_error, "expected ')' after a case pattern");
+            }
+            skip_newlines();
+            auto body = parse_list();
+            if (!body) {
+                return body.error();
+            }
+            item.body = body.value();
+
+            const bool fallthrough = match_operator(Operator::semicolon_and);
+            if (!fallthrough && !match_operator(Operator::double_semicolon)) {
+                match_operator(Operator::semicolon);
+            }
+            item.fallthrough = fallthrough;
+
+            if (item.patterns.empty()) {
+                // `*)` — the default branch, tried only when nothing else matched.
+                default_item = std::move(item);
+            } else {
+                items.push_back(std::move(item));
+            }
+        }
+
+        if (default_item) {
+            items.push_back(std::move(*default_item));
+        }
+        clause.items = std::move(items);
+        return ir::node(std::move(clause), "case");
+    }
+
+    Result<ir::NodePtr> parse_function_keyword() {
+        advance(); // 'function'
+        if (peek().kind != TokenKind::word) {
+            return failure(ErrorCode::syntax_error, "expected a function name");
+        }
+        const std::string name = advance().text;
+        // Both `function f ()` and `function f` are accepted; the parentheses are
+        // optional in the keyword form.
+        if (at_operator(Operator::subshell_open) && peek(1).kind == TokenKind::operator_token
+            && peek(1).op == Operator::subshell_close) {
+            advance();
+            advance();
+        }
+        skip_newlines();
+        auto body = parse_command();
+        if (!body) {
+            return body.error();
+        }
+        ir::FunctionDefinition definition;
+        definition.name = name;
+        definition.body = body.value();
+        return ir::node(std::move(definition), "function");
+    }
+
+    Result<ir::NodePtr> parse_function_paren() {
+        const std::string name = advance().text;
+        advance(); // '('
+        advance(); // ')'
+        skip_newlines();
+        auto body = parse_command();
+        if (!body) {
+            return body.error();
+        }
+        ir::FunctionDefinition definition;
+        definition.name = name;
+        definition.body = body.value();
+        return ir::node(std::move(definition), "function");
+    }
+
+    Result<ir::NodePtr> parse_simple_command() {
+        // `break`, `continue`, and `return` are control constructs, not commands.
+        if (peek().kind == TokenKind::word && !peek().quoted && !peek().reserved) {
+            const std::string& name = peek().text;
+            if (name == "break" || name == "continue" || name == "return") {
+                return parse_control(name);
+            }
+        }
+
+        ir::Command command;
+        bool saw_word = false;
+        for (;;) {
+            if (!saw_word && peek().kind == TokenKind::word && is_assignment_token(peek())) {
+                command.assignments.push_back(assignment_of(advance()));
+                continue;
+            }
+            if (peek().kind == TokenKind::io_number || is_redirection(peek())) {
+                auto redirections = parse_redirections();
+                if (!redirections) {
+                    return redirections.error();
+                }
+                for (Redirection& redirection : redirections.value()) {
+                    command.redirections.push_back(std::move(redirection));
+                }
+                continue;
+            }
+            if (peek().kind != TokenKind::word) {
+                break;
+            }
+            if (peek().reserved) {
+                if (!saw_word) {
+                    return failure(ErrorCode::syntax_error, "unexpected reserved word", peek().text);
+                }
+                // A reserved word is a keyword only where a *command* is
+                // expected. After the command name it is an ordinary argument,
+                // so `echo done` prints "done".
+                command.argv.push_back(Argument {advance().fragments});
+                continue;
+            }
+            command.argv.push_back(Argument {advance().fragments});
+            saw_word = true;
+        }
+
+        if (!saw_word && command.assignments.empty() && command.redirections.empty()) {
+            return failure(ErrorCode::empty_argv, "expected a command");
+        }
+        return ir::command(std::move(command), "command");
+    }
+
+    Result<ir::NodePtr> parse_control(const std::string& name) {
+        advance(); // the control word
+        int code = 0;
+        if (peek().kind == TokenKind::word && is_digits(literal_of(peek()))) {
+            const std::string digits = literal_of(advance());
+            code = std::stoi(digits);
+        } else if (peek().kind == TokenKind::word && !peek().quoted) {
+            return failure(ErrorCode::syntax_error, "expected a numeric argument to '" + name + "'");
+        }
+        ir::Control control;
+        if (name == "return") {
+            control.signal = ControlSignal::return_;
+            control.code = code;
+        } else if (name == "break") {
+            control.signal = ControlSignal::break_;
+        } else {
+            control.signal = ControlSignal::continue_;
+        }
+        return ir::node(std::move(control), name);
+    }
+
+    // ---- redirections -----------------------------------------------------
+
+    [[nodiscard]] static bool is_redirection(const Token& token) {
+        if (token.kind == TokenKind::io_number) {
+            return true;
+        }
+        if (token.kind != TokenKind::operator_token) {
+            return false;
+        }
+        switch (token.op) {
+        case Operator::redirect_in:
+        case Operator::redirect_out:
+        case Operator::redirect_append:
+        case Operator::redirect_clobber:
+        case Operator::redirect_read_write:
+        case Operator::redirect_dup_in:
+        case Operator::redirect_dup_out:
+        case Operator::redirect_heredoc:
+        case Operator::redirect_heredoc_strip:
+        case Operator::redirect_herestring:
+        case Operator::redirect_amp_out:
+        case Operator::redirect_amp_append:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    [[nodiscard]] static bool is_input_operator(Operator op) {
+        return op == Operator::redirect_in || op == Operator::redirect_dup_in;
+    }
+
+    Result<std::vector<Redirection>> parse_redirections() {
+        std::vector<Redirection> redirections;
+        for (;;) {
+            std::optional<int> source_fd;
+            if (peek().kind == TokenKind::io_number) {
+                const std::string digits = advance().text;
+                if (!is_digits(digits)) {
+                    return failure(ErrorCode::syntax_error, "an IO number must be decimal digits");
+                }
+                source_fd = std::stoi(digits);
+            }
+            if (peek().kind != TokenKind::operator_token || !is_redirection(peek())) {
+                if (source_fd) {
+                    return failure(ErrorCode::syntax_error, "an IO number must precede a redirection operator");
+                }
+                return redirections;
+            }
+            const Operator op = advance().op;
+            const RedirectStream default_stream = is_input_operator(op) ? RedirectStream::stdin_stream : RedirectStream::stdout_stream;
+            const RedirectStream stream = source_fd && *source_fd == 2 ? RedirectStream::stderr_stream : default_stream;
+
+            switch (op) {
+            case Operator::redirect_dup_out:
+            case Operator::redirect_dup_in: {
+                // The operand may arrive as an IO_NUMBER when another
+                // redirection follows it, so both spellings are accepted.
+                if (peek().kind != TokenKind::word && peek().kind != TokenKind::io_number) {
+                    return failure(ErrorCode::invalid_redirection, "descriptor duplication requires a target");
+                }
+                const std::string target = peek().kind == TokenKind::io_number ? advance().text : literal_of(advance());
+                Redirection redirection;
+                redirection.stream = stream;
+                if (source_fd) {
+                    redirection.source_fd = source_fd;
+                }
+                if (target == "-") {
+                    redirection.mode = RedirectMode::close;
+                    redirection.target.kind = StdioTargetKind::closed;
+                    redirections.push_back(std::move(redirection));
+                    break;
+                }
+                if (!is_digits(target)) {
+                    return failure(
+                        ErrorCode::invalid_redirection,
+                        "descriptor duplication target must be a number or '-'");
+                }
+                redirection.mode = RedirectMode::duplicate;
+                redirection.target.kind = StdioTargetKind::fd;
+                redirection.target.fd = std::stoi(target);
+                redirections.push_back(std::move(redirection));
+                break;
+            }
+            case Operator::redirect_heredoc:
+            case Operator::redirect_heredoc_strip: {
+                if (peek().kind != TokenKind::word) {
+                    return failure(ErrorCode::invalid_redirection, "a here-document requires a delimiter");
+                }
+                // The lexer resolved the body while scanning past the newline that
+                // ended the command line.
+                const Token delimiter = advance();
+                Redirection redirection;
+                redirection.stream = RedirectStream::stdin_stream;
+                redirection.mode = RedirectMode::read;
+                redirection.target.kind = StdioTargetKind::memory;
+                redirection.target.input = std::make_shared<MemoryReader>(delimiter.heredoc);
+                redirections.push_back(std::move(redirection));
+                break;
+            }
+            case Operator::redirect_herestring: {
+                if (peek().kind != TokenKind::word) {
+                    return failure(ErrorCode::invalid_redirection, "a here-string requires a word");
+                }
+                Argument word {advance().fragments};
+                redirections.push_back(from_word(std::move(word)));
+                break;
+            }
+            case Operator::redirect_amp_out:
+            case Operator::redirect_amp_append: {
+                if (peek().kind != TokenKind::word) {
+                    return failure(ErrorCode::invalid_redirection, "this redirection requires a path");
+                }
+                Argument path {advance().fragments};
+                // `&>f` is `>f 2>&1` and `&>>f` is `>>f 2>&1`. The path stays an
+                // Argument so tilde and parameter expansion still apply.
+                Redirection primary;
+                primary.stream = RedirectStream::stdout_stream;
+                primary.mode = op == Operator::redirect_amp_out ? RedirectMode::truncate : RedirectMode::append;
+                primary.target.kind = StdioTargetKind::deferred;
+                primary.target.deferred = std::move(path);
+                redirections.push_back(std::move(primary));
+                redirections.push_back(to_fd(RedirectStream::stderr_stream, 1));
+                break;
+            }
+            default: {
+                if (peek().kind != TokenKind::word) {
+                    return failure(ErrorCode::invalid_redirection, "a redirection requires a path");
+                }
+                Argument path {advance().fragments};
+                Redirection redirection;
+                redirection.stream = stream;
+                if (source_fd) {
+                    redirection.source_fd = source_fd;
+                }
+                switch (op) {
+                case Operator::redirect_in:
+                    redirection.mode = RedirectMode::read;
+                    break;
+                case Operator::redirect_out:
+                    redirection.mode = RedirectMode::truncate;
+                    break;
+                case Operator::redirect_append:
+                    redirection.mode = RedirectMode::append;
+                    break;
+                case Operator::redirect_clobber:
+                    redirection.mode = RedirectMode::clobber;
+                    break;
+                case Operator::redirect_read_write:
+                    redirection.mode = RedirectMode::read_write;
+                    break;
+                default:
+                    return failure(ErrorCode::invalid_redirection, "unsupported redirection");
+                }
+                redirection.target.kind = StdioTargetKind::deferred;
+                redirection.target.deferred = std::move(path);
+                redirections.push_back(std::move(redirection));
+                break;
+            }
+            }
+        }
+    }
+
+    TokenList tokens_;
     std::size_t current_ {0};
 };
 
 } // namespace
 
+Result<ir::Program> parse_script(std::string_view text) {
+    Lexer lexer {text};
+    if (lexer.error()) {
+        return lexer.error().value();
+    }
+    Parser parser {lexer.tokens()};
+    return parser.parse_program();
+}
+
 Result<ir::Program> parse_line(std::string_view line) {
-    auto tokens = tokenize(line);
-    if (!tokens) {
-        return tokens.error();
-    }
-    if (tokens.value().empty()) {
-        return Diagnostic {ErrorCode::empty_argv, "empty command line", {}};
-    }
-    return Parser {std::move(tokens).value()}.parse_program();
+    // A single line is a one-line script. The lexer still needs the whole text so
+    // that here-documents and multi-line quotes behave identically to a script.
+    return parse_script(line);
 }
 
 } // namespace lsh::cli

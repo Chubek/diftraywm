@@ -49,9 +49,11 @@ struct diftray_wayland_style {
   int border_size;
   int command_bar_height;
   int status_bar_height;
+  int launcher_bar_height;
   float border_color[4];
   float background_color[4];
   float command_bar_color[4];
+  float launcher_bar_color[4];
   float highlight_color[4];
 };
 
@@ -133,8 +135,21 @@ void diftray_wayland_runtime_set_style(struct diftray_wayland_runtime *runtime,
 
 void diftray_wayland_runtime_set_command_bar(
     struct diftray_wayland_runtime *runtime, bool visible, const char *text);
+// The launcher taskbar. It is anchored under the status bar and lives in the
+// overlay tree, so it always paints above the cells and the graphical windows.
+void diftray_wayland_runtime_set_launcher_bar(
+    struct diftray_wayland_runtime *runtime, bool visible, const char *text);
 void diftray_wayland_runtime_set_status_line(
     struct diftray_wayland_runtime *runtime, const char *text);
+
+// The seat's keyboard keymap and state. The keymap subsystem needs these to
+// turn an evdev key code into a keysym, which a Remap() action requires. Both
+// return NULL before a seat exists, so callers must handle the early-startup
+// and headless-test case.
+struct xkb_keymap *diftray_wayland_runtime_seat_keymap(
+    struct diftray_wayland_runtime *runtime);
+struct xkb_state *diftray_wayland_runtime_seat_state(
+    struct diftray_wayland_runtime *runtime);
 
 #ifdef __cplusplus
 }

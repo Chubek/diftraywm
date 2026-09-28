@@ -10,6 +10,11 @@ ncursor_mode = "stack"
 gcursor_mode = "tab"
 font = "monospace"
 font_size = 14
+# Every key lives in this INI file, not here: keymap.ini holds the remapping,
+# the built-in bindings, the Meta prefix chord and the help pager keys. This is
+# the only key-related setting the config carries. Resolved relative to this
+# file. See help/keymap.1.
+keymap = "keymap.ini"
 
 [terminal]
 shell = "libshell"

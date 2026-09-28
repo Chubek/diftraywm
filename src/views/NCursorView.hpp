@@ -41,6 +41,14 @@ public:
   bool select_next_cell();
   bool select_previous_cell();
   bool select_cell(Cell *cell);
+  std::size_t pane_count() const;
+  bool split_stack(Cell *cell);
+  bool focus_next_cell();
+  bool focus_prev_cell();
+  bool focus_up_cell();
+  bool focus_down_cell();
+  bool focus_left_cell();
+  bool focus_right_cell();
   const std::string &id() const { return id_; }
   void set_id(std::string id) { id_ = std::move(id); }
   const std::string &default_shell() const { return default_shell_; }
@@ -48,7 +56,8 @@ public:
   int workspace() const { return workspace_; }
   void set_workspace(int workspace) { workspace_ = workspace; }
 
-private:
+ private:
+  std::vector<Cell *> panes_in_order() const;
   std::vector<CellStack> cell_stacks_;
   CursorArea cursor_area_;
   bool cell_select_mode_ = false;

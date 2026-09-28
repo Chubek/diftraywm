@@ -13,8 +13,9 @@
 
 namespace api_examples {
 
+// The POSIX executor lives in the platform layer, not the platform-free core.
 inline lsh::Shell local_shell() {
-    return lsh::Shell(std::make_shared<lsh::LocalExecutor>());
+    return lsh::Shell(std::make_shared<lsh::posix::LocalExecutor>());
 }
 
 inline std::shared_ptr<lsh::MemoryWriter> capture_memory() {

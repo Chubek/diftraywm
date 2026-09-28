@@ -6,6 +6,31 @@ commands - selected DiftrayWM Command Bar commands
 :spawn above|below
 Create a terminal cell adjacent to the focused cell.
 .TP
+:mux split horizontal|vertical
+Split the focused multiplexer pane below (horizontal) or beside it (vertical).
+Shortcuts are Meta+S and Meta+V.
+.TP
+:mux focus next|prev|up|down|left|right
+Move multiplexer focus. Meta+O cycles forward, Meta+P cycles back, and
+Meta+Ctrl with an arrow key moves directionally.
+.TP
+:mux kill
+Remove the focused multiplexer pane. The last pane is kept.
+.TP
+:mux zoom
+Expand the focused pane to a TCursor and back. Shortcut is Meta+Z.
+.TP
+:mux list
+List multiplexer panes with the focused one marked *.
+.TP
+:keymap show
+Print the loaded keymap INI, its profiles, the active profile and every binding.
+:keymap reload re-reads the file and keeps the previous keymap on a parse error.
+:keymap check <path> validates a candidate file without adopting it.
+:keymap profile <name> switches profile; :keymap reset returns to the default.
+:keymap chord <spec> validates a chord such as <C-q> and reports its key code.
+See :help keymap.
+.TP
 :cell select|focus|promote|restore
 Operate on the selected terminal cell.
 .TP
@@ -19,7 +44,56 @@ Switch workspaces.
 List live graphical cursor identifiers.
 .TP
 :help {page}
-Open a manual page.
+Open a manual page. `help diftrayctl` documents the diftrayctl utility.
+.TP
+:plugin load|unload {path}
+Load or unload a native plugin shared library. diftrayctl plugin-load.
+.TP
+:plugin list
+List loaded plugins.
+.TP
+:extension exec {path}
+Load and run a Lua extension. diftrayctl extension-exec.
+.TP
+:extension list
+List loaded extensions.
+.TP
+:script source {path.tsc}
+Run a Termscript file and show its output. diftrayctl source-script.
+.TP
+:launcher lock|unlock|toggle
+Lock the launch bar to the top of the screen, release it, or flip the state.
+diftrayctl lock-launchbar, unlock-launchbar, toggle-launchbar.
+.TP
+:launcher status
+Report the launch bar's lock state, anchor, height and visibility.
+.TP
+:session status
+Report session, cell, plugin, extension, config and theme state.
+.TP
+:session exit
+Leave the session and return to the Linux console. diftrayctl exit-session.
+.TP
+:session restart
+Re-execute the compositor in place. diftrayctl restart-session.
+.TP
+:config path
+Print the configuration file in use.
+.TP
+:config open
+Open the configuration file in $EDITOR. diftrayctl config-open.
+.TP
+:config reload
+Re-read the configuration file. Reloads atomically.
+.TP
+:theme load {file.css}
+Apply a CSS theme file. See themes/default.css and themes/light.css.
+.TP
+:theme show
+List the active theme properties.
+.TP
+:set theme :root { ... }
+Apply inline CSS theme properties.
 
 .TP
 :output list
