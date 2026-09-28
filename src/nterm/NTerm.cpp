@@ -39,6 +39,13 @@ NTerm::NTerm(std::string shell_override) : shell_path_(std::move(shell_override)
                       static_cast<unsigned>(rows_));
     tsm_screen_set_max_sb(screen_, 2000);
     tsm_vte_new(&vte_, screen_, &NTerm::vte_write, this, nullptr, nullptr);
+    if (vte_) {
+      // Linux PTYs default to VERASE=DEL (0177).  libtsm defaults to sending
+      // BS (010) for BackSpace, which the line discipline then echoes as ^H
+      // instead of erasing.  Send DEL so BackSpace erases for both the
+      // embedded shell and external shells.
+      tsm_vte_set_backspace_sends_delete(vte_, true);
+    }
   }
   vterm_ = vterm_create(static_cast<uint16_t>(columns_),
                         static_cast<uint16_t>(rows_),
