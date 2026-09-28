@@ -530,7 +530,7 @@ int diftraywm_run_embedded_shell() {
     action.sa_flags = SA_RESTART;
     sigaction(SIGINT, &action, nullptr);
     sigaction(SIGQUIT, &action, nullptr);
-    lsh::Shell shell{std::make_shared<lsh::LocalExecutor>()};
+    lsh::Shell shell{std::make_shared<lsh::posix::LocalExecutor>()};
     shell.set_command_substitution_parser(lsh::cli::parse_line);
     int status = 0;
 

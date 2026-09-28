@@ -304,6 +304,7 @@ target_link_libraries(diftray_ptytty PUBLIC util)
 # LibShell is embedded in the PTY child. Compile its existing parser and
 # scripting backend without enabling the vendored project's examples/tools.
 add_library(diftray_libshell STATIC
+  third_party/libshell/cli/lsh-lex.cpp
   third_party/libshell/cli/libsh-parse.cpp
   third_party/libshell/src/LibShell-Qamrpp.cpp)
 target_include_directories(diftray_libshell SYSTEM PUBLIC third_party/libshell/include)

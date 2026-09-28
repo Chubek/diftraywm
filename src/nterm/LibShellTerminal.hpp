@@ -1,12 +1,7 @@
 #pragma once
 #include <unistd.h>
 
-// LibShell's generic local executor creates detached sessions for external
-// commands. NTerm already owns a controlling PTY session: detaching here loses
-// /dev/tty and prevents terminal-generated SIGINT from reaching applications.
-// Adapt only that executor header's session creation; leave its parsing,
-// expansion, redirection, environment and execution machinery intact.
-inline pid_t diftray_shell_inherit_session() { return ::getsid(0); }
-#define setsid diftray_shell_inherit_session
+// The new LibShell POSIX executor already stays in the shell's session
+// (no setsid), so no adaptation is needed. Include the POSIX executor
+// umbrella for LocalExecutor and the builtin registry.
 #include <LibShell-Posix.hpp>
-#undef setsid
