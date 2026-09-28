@@ -1,0 +1,15 @@
+# Copy into ~/.config/diftraywm/diftray.yaml.
+# Quote CSS colors: an unquoted # begins a YAML comment.
+general:
+  border_size: 3
+  border_color: '#59a6ff'
+  background_color: '#090c11'
+  command_bar_height: 40
+  status_bar_height: 24
+  command_bar_color: '#141f2efa'
+  ncursor_mode: stack
+  gcursor_mode: tab
+  font: monospace
+  font_size: 14
+terminal:
+  shell: libshell

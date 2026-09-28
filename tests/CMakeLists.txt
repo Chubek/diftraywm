@@ -49,3 +49,38 @@ add_executable(diftraywm_nterm_input_test nterm_input.cpp)
 diftraywm_target_defaults(diftraywm_nterm_input_test)
 target_link_libraries(diftraywm_nterm_input_test PRIVATE diftraywm_nterm)
 add_test(NAME diftraywm_nterm_input_test COMMAND diftraywm_nterm_input_test)
+
+add_executable(diftraywm_config_test config.cpp ../src/config/Config.cpp ../src/config/YamlConfig.c)
+target_include_directories(diftraywm_config_test PRIVATE ../src ${DIFTRAY_THIRD_PARTY}/PEGTL/include)
+target_link_libraries(diftraywm_config_test PRIVATE diftray_cyaml diftray_toml)
+add_test(NAME diftraywm_config_test COMMAND diftraywm_config_test)
+
+add_library(diftraywm_test_plugin MODULE extension_plugin.c)
+target_include_directories(diftraywm_test_plugin PRIVATE ../include)
+add_library(diftraywm_failed_plugin MODULE extension_plugin.c)
+target_include_directories(diftraywm_failed_plugin PRIVATE ../include)
+target_compile_definitions(diftraywm_failed_plugin PRIVATE FAIL_INIT)
+add_executable(diftraywm_extensions_test extensions.cpp)
+diftraywm_target_defaults(diftraywm_extensions_test)
+diftraywm_link_exe(diftraywm_extensions_test)
+target_compile_definitions(diftraywm_extensions_test PRIVATE
+  TEST_PLUGIN="$<TARGET_FILE:diftraywm_test_plugin>"
+  FAILED_PLUGIN="$<TARGET_FILE:diftraywm_failed_plugin>")
+add_dependencies(diftraywm_extensions_test diftraywm_test_plugin diftraywm_failed_plugin)
+add_test(NAME diftraywm_extensions_test COMMAND diftraywm_extensions_test)
+set_tests_properties(diftraywm_extensions_test PROPERTIES TIMEOUT 10)
+
+add_executable(diftraywm_shell_test shell.cpp)
+diftraywm_target_defaults(diftraywm_shell_test)
+target_link_libraries(diftraywm_shell_test PRIVATE diftraywm_nterm)
+add_test(NAME diftraywm_shell_test COMMAND diftraywm_shell_test)
+set_tests_properties(diftraywm_shell_test PROPERTIES TIMEOUT 15)
+
+add_test(NAME diftraywm_extension_cli_test COMMAND ${CMAKE_COMMAND} -E env
+  DIFTRAYWM_LOGIC_ONLY=1
+  DIFTRAYWM_CONFIG=${DIFTRAYWM_ROOT}/examples/diftray.yaml
+  DIFTRAYWM_EXTENSION_PATH=${DIFTRAYWM_ROOT}/examples
+  DIFTRAYWM_PLUGIN_PATH=/nonexistent/diftray-plugins
+  $<TARGET_FILE:diftray> --command scratchpad)
+set_tests_properties(diftraywm_extension_cli_test PROPERTIES
+  PASS_REGULAR_EXPRESSION "opened notelet scratchpad" TIMEOUT 10)

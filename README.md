@@ -95,7 +95,9 @@ focus. `ncursor list` lists cell IDs as well as monitor/workspace ownership.
 
 ## Appearance
 
-`diftray.conf` sets terminal font, window layout, and initial colors. Its
+`diftray.yaml`, `diftray.toml`, or the original `diftray.conf` sets terminal font,
+window layout, and initial colors. See [INSTALL.md](INSTALL.md) for discovery
+and [examples](examples) for YAML/TOML configurations. Its
 `theme` setting names a CSS file relative to the configuration file. The
 shipped `themes/default.css` defines `border-size`, `command-bar-height`,
 `status-bar-height`, `border-color`, `background-color`, and
@@ -136,3 +138,12 @@ covers navigation, ownership migration, Notelet workers, terminal display and
 input backpressure. See [IMPLEMENTATION.md](IMPLEMENTATION.md) for the remaining
 specification gaps and dependency constraints. This is not yet a complete
 implementation of every contract in AGENTS.md.
+
+## Shell and extensions
+
+NTerm defaults to the embedded LibShell. `set shell /path/to/shell` selects an
+external shell, and `set shell libshell` restores the embedded implementation.
+Lua/Kaguya extensions and dynalo native plugins can register Command Bar
+commands and subscribe to input, view and frame events. See
+[EXTENSIONS.md](EXTENSIONS.md) and [examples/notebook.lua](examples/notebook.lua)
+for Notelet command shortcuts.

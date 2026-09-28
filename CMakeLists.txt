@@ -44,7 +44,7 @@ if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}")
     "not exist. Restore the vendored trees described in AGENTS.md section 11.")
 endif()
 
-set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL oniguruma)
+set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL oniguruma libshell lua kaguya dynalo libcyaml tomlc99)
 set(_diftraywm_vendored_missing "")
 foreach(_dep IN LISTS _diftraywm_vendored_required)
   if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}/${_dep}")
@@ -296,6 +296,39 @@ target_compile_options(diftray_ptytty PRIVATE
   -w -Wno-unused-parameter)
 target_link_libraries(diftray_ptytty PUBLIC util)
 
+# LibShell is embedded in the PTY child. Compile its existing parser and
+# scripting backend without enabling the vendored project's examples/tools.
+add_library(diftray_libshell STATIC
+  third_party/libshell/cli/libsh-parse.cpp
+  third_party/libshell/src/LibShell-Qamrpp.cpp)
+target_include_directories(diftray_libshell SYSTEM PUBLIC third_party/libshell/include)
+target_include_directories(diftray_libshell SYSTEM PRIVATE
+  third_party/libshell/third_party/QaMRpp/include
+  third_party/libshell/third_party/QaMRpp/third_party/SerdeTk/include
+  third_party/libshell/third_party/QaMRpp/third_party)
+target_link_libraries(diftray_libshell PUBLIC ${CMAKE_DL_LIBS})
+
+file(GLOB DIFTRAY_LUA_SOURCES CONFIGURE_DEPENDS "${DIFTRAY_THIRD_PARTY}/lua/*.c")
+list(FILTER DIFTRAY_LUA_SOURCES EXCLUDE REGEX "/(lua|luac|ltests|onelua)\\.c$")
+add_library(diftray_lua_runtime STATIC ${DIFTRAY_LUA_SOURCES})
+target_include_directories(diftray_lua_runtime SYSTEM PUBLIC third_party/lua)
+target_compile_definitions(diftray_lua_runtime PRIVATE LUA_USE_LINUX)
+target_link_libraries(diftray_lua_runtime PUBLIC ${CMAKE_DL_LIBS} m)
+
+# Configuration formats use the supplied parsers. libyaml is libcyaml's
+# platform dependency; it is not vendored in this checkout.
+pkg_check_modules(LIBYAML REQUIRED IMPORTED_TARGET yaml-0.1)
+add_library(diftray_cyaml STATIC
+  third_party/libcyaml/src/mem.c third_party/libcyaml/src/free.c
+  third_party/libcyaml/src/load.c third_party/libcyaml/src/save.c
+  third_party/libcyaml/src/copy.c third_party/libcyaml/src/util.c
+  third_party/libcyaml/src/utf8.c)
+target_include_directories(diftray_cyaml SYSTEM PUBLIC third_party/libcyaml/include)
+target_compile_definitions(diftray_cyaml PRIVATE VERSION_MAJOR=2 VERSION_MINOR=0 VERSION_PATCH=0 VERSION_DEVEL=1)
+target_link_libraries(diftray_cyaml PUBLIC PkgConfig::LIBYAML m)
+add_library(diftray_toml STATIC third_party/tomlc99/toml.c)
+target_include_directories(diftray_toml SYSTEM PUBLIC third_party/tomlc99)
+
 # ---------------------------------------------------------------------------
 # Shared target setup
 # ---------------------------------------------------------------------------
@@ -368,6 +401,7 @@ add_library(diftraywm_compositor STATIC
   src/compositor/Logger.cpp
   src/compositor/Signals.cpp
   src/config/Config.cpp
+  src/config/YamlConfig.c
 )
 diftraywm_target_defaults(diftraywm_compositor)
 target_compile_definitions(diftraywm_compositor PRIVATE
@@ -375,6 +409,7 @@ target_compile_definitions(diftraywm_compositor PRIVATE
   DIFTRAY_HELP_DEFAULT_PATH="${DIFTRAYWM_ROOT}/help:${CMAKE_INSTALL_FULL_DATADIR}/diftraywm/help")
 target_link_libraries(diftraywm_compositor PUBLIC
   diftraywm_notelet
+  diftray_cyaml diftray_toml
   wlroots::wlroots
   PkgConfig::WLROOTS_BUILD_DEPS
 )
@@ -391,6 +426,7 @@ diftraywm_target_defaults(diftraywm_nterm)
 # the PTY, harfbuzz shapes, freetype rasterises, fontconfig resolves fallbacks.
 target_link_libraries(diftraywm_nterm PUBLIC
   diftray_libtsm
+  diftray_libshell
   diftray_ptytty
   vterm-static
   PkgConfig::WLROOTS_BUILD_DEPS
@@ -436,11 +472,14 @@ add_library(diftraywm_plugin STATIC
 )
 diftraywm_target_defaults(diftraywm_plugin)
 target_link_libraries(diftraywm_plugin PUBLIC ${CMAKE_DL_LIBS})
+target_include_directories(diftraywm_plugin SYSTEM PRIVATE third_party/dynalo/include)
 
 add_library(diftraywm_lua STATIC
   src/lua/LuaEngine.cpp
 )
 diftraywm_target_defaults(diftraywm_lua)
+target_include_directories(diftraywm_lua SYSTEM PRIVATE third_party/kaguya/include)
+target_link_libraries(diftraywm_lua PUBLIC diftray_lua_runtime)
 
 # ---------------------------------------------------------------------------
 # Executables
@@ -497,6 +536,9 @@ install(DIRECTORY "${DIFTRAY_VENDOR_PREFIX}/lib/"
 
 install(FILES ${DIFTRAY_BUNDLED_NOTELETS}
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm/notelets")
+install(DIRECTORY examples DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
+install(FILES include/DiftrayWM-Plugin.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(FILES EXTENSIONS.md DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(FILES diftray.conf
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(DIRECTORY themes

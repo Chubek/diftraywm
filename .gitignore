@@ -878,3 +878,6 @@ Thumbs.db
 
 # Local host build tools
 .tools/gperf/
+
+# Compositor extension examples are source, not generated LuaLaTeX output.
+!examples/*.lua

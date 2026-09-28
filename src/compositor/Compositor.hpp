@@ -45,6 +45,8 @@ public:
   ~Compositor();
 
   bool init();
+  void notify_extensions(const std::string &event);
+  void flush_extension_commands();
   int run();
   void stop();
   void set_active_view(View *view);

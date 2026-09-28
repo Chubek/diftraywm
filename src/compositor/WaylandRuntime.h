@@ -53,6 +53,9 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
 bool diftray_wayland_runtime_start(struct diftray_wayland_runtime *runtime);
 void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime);
 
+void diftray_wayland_runtime_set_frame_handler(struct diftray_wayland_runtime *runtime,
+    void (*handler)(void *), void *userdata);
+
 void diftray_wayland_runtime_set_text_renderer(struct diftray_wayland_runtime *runtime,
     diftray_text_renderer renderer, void *userdata);
 

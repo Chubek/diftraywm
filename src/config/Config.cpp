@@ -7,6 +7,11 @@
 #include <fstream>
 #include <sstream>
 #include <string_view>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <toml.h>
+#include "config/YamlConfig.h"
 
 namespace {
 namespace pegtl = tao::pegtl;
@@ -18,11 +23,12 @@ struct assignment
     : pegtl::seq<space, identifier, space, pegtl::one<'='>, space, value,
                  pegtl::opt<pegtl::eolf>> {};
 struct blank_line : pegtl::seq<space, pegtl::eol> {};
+struct comment_line : pegtl::seq<space, pegtl::one<'#'>, pegtl::until<pegtl::eolf>> {};
 struct section
     : pegtl::seq<space, identifier, space, pegtl::one<'{'>, pegtl::eolf,
-                 pegtl::star<assignment>, space, pegtl::one<'}'>,
+                 pegtl::star<pegtl::sor<assignment, blank_line, comment_line>>, space, pegtl::one<'}'>,
                  pegtl::opt<pegtl::eolf>> {};
-struct grammar : pegtl::must<pegtl::star<pegtl::sor<section, blank_line>>, pegtl::eof> {};
+struct grammar : pegtl::must<pegtl::star<pegtl::sor<section, blank_line, comment_line>>, pegtl::eof> {};
 
 std::string trim(std::string text) {
   const auto begin = text.find_first_not_of(" \t\r\n");
@@ -58,32 +64,10 @@ bool parse_color(std::string_view value, float out[4]) {
 }
 }
 
-bool load_compositor_config(const std::string &path, CompositorConfig &config,
-                            std::string &error) {
-  std::ifstream input(path);
-  if (!input) {
-    return true;
-  }
-  std::ostringstream contents;
-  contents << input.rdbuf();
-  const std::string source = contents.str();
-  try {
-    pegtl::memory_input parser_input(source, path);
-    pegtl::parse<grammar>(parser_input);
-  } catch (const pegtl::parse_error &exception) {
-    error = exception.what();
-    return false;
-  }
-
-  std::istringstream lines(source);
-  for (std::string line; std::getline(lines, line);) {
-    line = trim(std::move(line));
-    const auto equals = line.find('=');
-    if (equals == std::string::npos) {
-      continue;
-    }
-    const std::string key = trim(line.substr(0, equals));
-    const std::string value = trim(line.substr(equals + 1));
+namespace {
+using Settings = std::map<std::string, std::string>;
+bool apply(const Settings &settings, CompositorConfig &config, std::string &error) {
+  for (const auto &[key, value] : settings) {
     if (key == "border_size") {
       if (!parse_int(value, config.border_size) || config.border_size < 1) {
         error = "border_size must be a positive integer";
@@ -115,8 +99,10 @@ bool load_compositor_config(const std::string &path, CompositorConfig &config,
         return false;
       }
     } else if (key == "shell") {
+      if (value.empty()) { error = "shell cannot be empty"; return false; }
       config.shell = value;
     } else if (key == "font") {
+      if (value.empty()) { error = "font cannot be empty"; return false; }
       config.font = value;
     } else if (key == "font_size") {
       if (!parse_int(value, config.font_size) || config.font_size < 8) {
@@ -155,7 +141,104 @@ bool load_compositor_config(const std::string &path, CompositorConfig &config,
       config.help_key_line_down = value;
     } else if (key == "help_key_line_up") {
       config.help_key_line_up = value;
+    } else {
+      error = "unknown setting: " + key;
+      return false;
     }
   }
+  return true;
+}
+bool add(Settings &settings, const std::string &key, std::string value, std::string &error) {
+  if (!settings.emplace(key, std::move(value)).second) {
+    error = "duplicate setting: " + key;
+    return false;
+  }
+  return true;
+}
+bool parse_toml(std::string source, Settings &settings, std::string &error) {
+  char diagnostic[512]{};
+  std::unique_ptr<toml_table_t, decltype(&toml_free)> root(
+      toml_parse(source.data(), diagnostic, sizeof(diagnostic)), toml_free);
+  if (!root) { error = diagnostic; return false; }
+  for (int section_index = 0; const char *section = toml_key_in(root.get(), section_index); ++section_index) {
+    auto *table = toml_table_in(root.get(), section);
+    if (!table || (std::string_view(section) != "general" && std::string_view(section) != "terminal")) {
+      error = "expected general or terminal table: " + std::string(section); return false;
+    }
+    for (int index = 0; const char *key = toml_key_in(table, index); ++index) {
+      auto value = toml_string_in(table, key);
+      std::string text;
+      if (value.ok) { text = value.u.s; std::free(value.u.s); }
+      else {
+        value = toml_int_in(table, key);
+        if (!value.ok) { error = "expected string or integer: " + std::string(key); return false; }
+        text = std::to_string(value.u.i);
+      }
+      if (!add(settings, key, std::move(text), error)) return false;
+    }
+  }
+  return true;
+}
+bool parse_yaml(const std::string &source, Settings &settings, std::string &error) {
+  DiftrayYaml *document = nullptr;
+  char diagnostic[512]{};
+  if (!diftray_yaml_load(source.data(), source.size(), &document, diagnostic, sizeof(diagnostic))) {
+    error = diagnostic; return false;
+  }
+  std::unique_ptr<DiftrayYaml, decltype(&diftray_yaml_free)> owned(document, diftray_yaml_free);
+  if (!document) return true;
+  for (auto *section : {document->general, document->terminal}) {
+    if (!section) continue;
+#define CONFIG_FIELD(key) if (section->key && !add(settings, #key, section->key, error)) return false;
+#include "config/ConfigFields.def"
+#undef CONFIG_FIELD
+  }
+  return true;
+}
+}
+
+bool load_compositor_config(const std::string &path, CompositorConfig &config,
+                            std::string &error) {
+  error.clear();
+  std::ifstream input(path, std::ios::binary);
+  if (!input) { error = "cannot open configuration: " + path; return false; }
+  std::string source;
+  char buffer[4096];
+  while (input.read(buffer, sizeof(buffer)) || input.gcount()) {
+    source.append(buffer, input.gcount());
+    if (source.size() > 1024 * 1024) { error = "configuration exceeds 1 MiB"; return false; }
+  }
+  if (input.bad()) { error = "cannot read configuration: " + path; return false; }
+  if (source.find('\0') != std::string::npos) { error = "configuration contains NUL"; return false; }
+  Settings settings;
+  const auto extension = std::filesystem::path(path).extension();
+  if (extension == ".toml") {
+    if (!parse_toml(source, settings, error)) return false;
+  } else if (extension == ".yaml" || extension == ".yml") {
+    if (!parse_yaml(source, settings, error)) return false;
+  } else {
+    try {
+      pegtl::memory_input parser_input(source, path);
+      pegtl::parse<grammar>(parser_input);
+    } catch (const pegtl::parse_error &exception) { error = exception.what(); return false; }
+    std::istringstream lines(source);
+    for (std::string line; std::getline(lines, line);) {
+      line = trim(std::move(line));
+      if (line.empty() || line.front() == '#') continue;
+      const auto brace = line.find('{');
+      if (brace != std::string::npos) {
+        const auto section = trim(line.substr(0, brace));
+        if (section != "general" && section != "terminal") {
+          error = "unknown section: " + section; return false;
+        }
+      }
+      const auto equals = line.find('=');
+      if (equals == std::string::npos) continue;
+      if (!add(settings, trim(line.substr(0, equals)), trim(line.substr(equals + 1)), error)) return false;
+    }
+  }
+  auto candidate = config;
+  if (!apply(settings, candidate, error)) { error = path + ": " + error; return false; }
+  config = std::move(candidate);
   return true;
 }

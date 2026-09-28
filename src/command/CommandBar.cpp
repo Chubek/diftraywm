@@ -72,6 +72,15 @@ bool CommandBar::dispatch(std::string_view input) {
       return true;
     }
   }
+  if (auto it = extensions_.find(tokens.front()); it != extensions_.end()) {
+    auto command = it->second; // callbacks may unregister themselves
+    if (command.required_scope && *command.required_scope != scope) {
+      set_status_line("command is unavailable in this scope"); return false;
+    }
+    const auto result = command.callback(tokens, scope);
+    if (!result.empty()) set_status_line(result);
+    return true;
+  }
   set_status_line("unknown command: " + tokens.front());
   return false;
 }
@@ -84,3 +93,17 @@ void CommandBar::set_context(CommandContext *context) { context_ = context; }
 
 const std::string &CommandBar::status_line() const { return status_line_; }
 void CommandBar::set_status_line(std::string message) { status_line_ = std::move(message); }
+
+bool CommandBar::register_command(const std::string &name, const void *owner,
+                                 ExtensionCallback callback, std::optional<CommandScope> required_scope) {
+  if (name.empty() || !owner || !callback || name.find_first_of(" \t\r\n\"") != std::string::npos) return false;
+  for (const auto &handler : handlers_) if (handler->matches(name)) return false;
+  return extensions_.emplace(name, ExtensionCommand{owner, std::move(callback), required_scope}).second;
+}
+void CommandBar::unregister_command(const std::string &name, const void *owner) {
+  const auto it = extensions_.find(name);
+  if (it != extensions_.end() && it->second.owner == owner) extensions_.erase(it);
+}
+void CommandBar::unregister_owner(const void *owner) {
+  std::erase_if(extensions_, [owner](const auto &entry) { return entry.second.owner == owner; });
+}

@@ -30,6 +30,7 @@ monitor, workspace, and cursor information. `notelet refresh` refreshes a snapsh
 `notelet close` removes the cell. Notelet state stays with the cell through
 moves and workspace changes, and disappears when the cell closes.
 
+The default shell is embedded LibShell. `set shell libshell` restores it.
 `set shell /path/to/shell` restarts the scoped shell. In the global Command Bar it
 updates the active NCursor's inherited shell settings, including future cells;
 individual overrides retain precedence. `theme load <file.css>` reloads supported

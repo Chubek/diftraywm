@@ -68,6 +68,8 @@ struct diftray_wayland_runtime {
   struct wl_list outputs;
   struct wl_list keyboards;
   struct wl_list toplevels;
+  void (*frame_handler)(void *);
+  void *frame_userdata;
   diftray_text_renderer text_renderer;
   void *text_userdata;
   diftray_wayland_key_handler key_handler;
@@ -250,6 +252,7 @@ static void output_frame(struct wl_listener *listener, void *data) {
   clock_gettime(CLOCK_MONOTONIC, &now);
   if (wlr_scene_output_commit(output->scene_output, NULL)) {
     wlr_scene_output_send_frame_done(output->scene_output, &now);
+    if (output->runtime->frame_handler) output->runtime->frame_handler(output->runtime->frame_userdata);
   }
 }
 
@@ -1221,4 +1224,11 @@ void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime) {
   free(runtime->command_bar_text_copy);
   free(runtime->status_line);
   free(runtime);
+}
+
+void diftray_wayland_runtime_set_frame_handler(struct diftray_wayland_runtime *runtime,
+    void (*handler)(void *), void *userdata) {
+  if (!runtime) return;
+  runtime->frame_handler = handler;
+  runtime->frame_userdata = userdata;
 }

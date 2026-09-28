@@ -1,3 +1,4 @@
+extern int diftraywm_run_embedded_shell();
 #include "nterm/NTerm.hpp"
 
 #include <algorithm>
@@ -30,7 +31,7 @@ void NTerm::vte_write(tsm_vte *, const char *u8, size_t len, void *data) {
 NTerm::NTerm(std::string shell_override) : shell_path_(std::move(shell_override)) {
   if (shell_path_.empty()) {
     const char *environment_shell = std::getenv("DIFTRAYWM_SHELL");
-    shell_path_ = environment_shell && *environment_shell ? environment_shell : "/bin/sh";
+    shell_path_ = environment_shell && *environment_shell ? environment_shell : "libshell";
   }
   tsm_screen_new(&screen_, nullptr, nullptr);
   if (screen_) {
@@ -62,7 +63,7 @@ NTerm::~NTerm() {
 
 bool NTerm::spawn_shell() {
   last_error_.clear();
-  if (::access(shell_path_.c_str(), X_OK) != 0) {
+  if (shell_path_ != "libshell" && ::access(shell_path_.c_str(), X_OK) != 0) {
     last_error_ = "shell is not executable: " + shell_path_;
     return false;
   }
@@ -109,6 +110,7 @@ bool NTerm::spawn_shell() {
       ::close(slave);
     }
     close_range(3, ~0U, 0);
+    if (shell_path_ == "libshell") _exit(diftraywm_run_embedded_shell());
     const char *name = std::strrchr(shell_path_.c_str(), '/');
     name = name ? name + 1 : shell_path_.c_str();
     ::execl(shell_path_.c_str(), name, "-i", static_cast<char *>(nullptr));

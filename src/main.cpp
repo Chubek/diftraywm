@@ -62,6 +62,7 @@ int main(int argc, char **argv) {
       std::cerr << compositor.command_bar().status_line() << '\n';
       return 1;
     }
+    compositor.flush_extension_commands();
     std::cout << compositor.command_bar().status_line() << '\n';
     return 0;
   }

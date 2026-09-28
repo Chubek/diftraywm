@@ -71,6 +71,7 @@ void Compositor::relayout() {
   rebuild_command_context();
   update_chrome();
   laying_out_ = false;
+  notify_extensions("view");
 }
 
 std::string Compositor::list_outputs() const {

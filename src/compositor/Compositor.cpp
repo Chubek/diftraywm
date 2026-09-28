@@ -74,23 +74,28 @@ bool Compositor::init() {
   if (active_view_) {
     return true;
   }
-  std::filesystem::path config_path = "diftray.conf";
+  std::filesystem::path config_path;
   if (const char *configured = std::getenv("DIFTRAYWM_CONFIG")) {
     config_path = configured;
+    if (!load_compositor_config(config_path.string(), config_, status_line_)) return false;
   } else {
-    std::filesystem::path user_directory;
-    if (const char *home = std::getenv("XDG_CONFIG_HOME"); home && *home) user_directory = home;
-    else if (const char *home = std::getenv("HOME"); home && *home) user_directory = std::filesystem::path(home) / ".config";
-    const auto user_config = user_directory / "diftraywm/diftray.conf";
-    if (!user_directory.empty() && std::filesystem::exists(user_config)) config_path = user_config;
-    else if (!std::filesystem::exists(config_path)) {
-      std::error_code error;
-      const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
-      if (!error) config_path = executable.parent_path().parent_path() / "share/diftraywm/diftray.conf";
+    std::vector<std::filesystem::path> directories;
+    if (const char *home = std::getenv("XDG_CONFIG_HOME"); home && *home)
+      directories.emplace_back(std::filesystem::path(home) / "diftraywm");
+    else if (const char *home = std::getenv("HOME"); home && *home)
+      directories.emplace_back(std::filesystem::path(home) / ".config/diftraywm");
+    directories.emplace_back(".");
+    std::error_code error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error) directories.emplace_back(executable.parent_path().parent_path() / "share/diftraywm");
+    for (const auto &directory : directories) {
+      for (const auto *name : {"diftray.yaml", "diftray.yml", "diftray.toml", "diftray.conf"}) {
+        const auto candidate = directory / name;
+        if (std::filesystem::exists(candidate, error)) { config_path = candidate; break; }
+      }
+      if (!config_path.empty()) break;
     }
-  }
-  if (!load_compositor_config(config_path.string(), config_, status_line_)) {
-    return false;
+    if (!config_path.empty() && !load_compositor_config(config_path.string(), config_, status_line_)) return false;
   }
   if (!config_.theme.empty() && std::filesystem::path(config_.theme).is_relative()) {
     config_.theme = (config_path.parent_path() / config_.theme).lexically_normal().string();
@@ -125,8 +130,8 @@ bool Compositor::init() {
       return false;
     }
   }
-  plugin_manager_ = new PluginManager();
-  lua_engine_ = new LuaEngine();
+  plugin_manager_ = new PluginManager(&command_bar_);
+  lua_engine_ = new LuaEngine(&command_bar_);
   if (!nterm_renderer_.init(config_.font, config_.font_size)) {
     status_line_ = "failed to initialize text renderer"; return false;
   }
@@ -137,9 +142,10 @@ bool Compositor::init() {
   if (lua_engine_) {
     lua_engine_->init();
     lua_engine_->scan_extensions();
+    if (!lua_engine_->error().empty()) std::cerr << lua_engine_->error() << '\n';
   }
   if (plugin_manager_) {
-    plugin_manager_->discover();
+    if (!plugin_manager_->discover()) std::cerr << "plugin discovery: " << plugin_manager_->error() << '\n';
   }
   notelet_catalog_ = std::make_unique<NoteletCatalog>();
   const char *notelet_path = std::getenv("DIFTRAY_NOTELETS_PATH");
@@ -157,6 +163,7 @@ bool Compositor::init() {
   if (!notelet_catalog_->discover(discovery_path, status_line_)) return false;
 
   if (std::getenv("DIFTRAYWM_LOGIC_ONLY")) {
+    lua_engine_->drain_commands();
     status_line_ = "logic-only mode";
     return true;
   }
@@ -170,6 +177,7 @@ bool Compositor::init() {
   notelet_timer_ = wl_event_loop_add_timer(wl_display_get_event_loop(display_.get()),
                                           &Compositor::notelets_ready, this);
   if (!notelet_timer_) { status_line_ = "failed to create Notelet timer"; return false; }
+  wl_event_source_timer_update(notelet_timer_, 10);
   const char *socket_name = std::getenv("DIFTRAYWM_WAYLAND_SOCKET");
   const char *registered_socket =
       socket_name && *socket_name
@@ -202,6 +210,9 @@ bool Compositor::init() {
   // variable to connect to the parent compositor; replacing it with our
   // newly-created socket here makes it connect back to itself.  Children
   // launched by DiftrayWM are given our socket below, after backend startup.
+  diftray_wayland_runtime_set_frame_handler(wayland_runtime_, [](void *data) {
+    static_cast<Compositor *>(data)->notify_extensions("frame");
+  }, this);
   diftray_wayland_runtime_set_text_renderer(wayland_runtime_,
       [](void *userdata, const char *text, uint32_t *pixels, int width, int height,
          const float bg[4], const float fg[4]) {
@@ -377,7 +388,9 @@ int Compositor::notelets_ready(void *userdata) {
     busy |= app->busy();
   }
   if (changed) self->update_chrome();
-  if (busy) wl_event_source_timer_update(self->notelet_timer_, 10);
+  self->flush_extension_commands();
+  if (busy || (self->lua_engine_ && !self->lua_engine_->extensions().empty()))
+    wl_event_source_timer_update(self->notelet_timer_, 10);
   return 0;
 }
 
@@ -586,7 +599,7 @@ int Compositor::terminal_fd_ready(int fd, uint32_t mask, void *data) {
   else wl_event_source_fd_update(compositor->pty_sources_.at(fd), WL_EVENT_READABLE |
       (cell->nterm()->input_pending() ? WL_EVENT_WRITABLE : 0));
   compositor->render_cell(cell, cell == compositor->active_cell());
-  if (compositor->help_pager_active_ && it->second == compositor->active_cell()) {
+  if (compositor->help_pager_active_ && cell == compositor->active_cell()) {
     compositor->paint_help_pager();
   }
   return 0;
@@ -596,6 +609,7 @@ bool Compositor::terminal_key_received(void *userdata, uint32_t keysym,
                                        uint32_t modifiers, uint32_t state,
                                        uint32_t unicode, uint32_t, uint32_t) {
   auto *compositor = static_cast<Compositor *>(userdata);
+  if (compositor) compositor->notify_extensions("input");
   return compositor && compositor->handle_key(keysym, modifiers, state, unicode);
 }
 
@@ -1379,7 +1393,7 @@ std::string Compositor::restore_quick_slot(int slot) {
 }
 
 std::string Compositor::set_shell_override(const std::string &shell, CommandScope scope) {
-  if (shell.empty() || ::access(shell.c_str(), X_OK) != 0) return "shell is not executable: " + shell;
+  if (shell.empty() || (shell != "libshell" && ::access(shell.c_str(), X_OK) != 0)) return "shell is not executable: " + shell;
   auto change = [&](Cell *cell, bool individual) {
     unwatch_cell_pty(cell);
     cell->set_shell_override(shell, individual);
@@ -1690,5 +1704,25 @@ std::string Compositor::switch_workspace(int number) {
 void WlDisplayDeleter::operator()(wl_display *ptr) const noexcept {
   if (ptr) {
     wl_display_destroy(ptr);
+  }
+}
+
+void Compositor::notify_extensions(const std::string &event) {
+  const auto old_status = command_bar_.status_line();
+  if (plugin_manager_) plugin_manager_->notify(event);
+  if (lua_engine_) lua_engine_->notify(event);
+  if (old_status != command_bar_.status_line()) {
+    status_line_ = command_bar_.status_line();
+    update_chrome();
+  }
+}
+
+void Compositor::flush_extension_commands() {
+  if (!lua_engine_) return;
+  const auto before = command_bar_.status_line();
+  lua_engine_->drain_commands();
+  if (before != command_bar_.status_line()) {
+    status_line_ = command_bar_.status_line();
+    update_chrome();
   }
 }
