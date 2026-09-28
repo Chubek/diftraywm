@@ -82,14 +82,19 @@ public:
   bool help_pager_active() const { return help_pager_active_; }
   const std::string &help_page_name() const { return help_pager_.page_name(); }
   std::string spawn_ncursor();
+  std::string evaluate_config(const std::string &expression, bool run);
+  std::string config_variables() const;
   bool handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
-                  uint32_t unicode);
+                  uint32_t unicode, uint32_t keycode = UINT32_MAX);
   std::string cycle_tab(int delta);
   std::string switch_workspace(int number);
   int current_workspace() const { return current_workspace_; }
   void relayout();
   void synchronize_outputs(const std::vector<OutputGeometry> &outputs);
   std::string list_outputs() const;
+  MonitorConfig monitor_config(const std::string &name) const;
+  std::string configure_output(const std::string &name, const std::string &setting,
+                               const std::string &value, const std::string &extra = {});
   std::string focus_output(const std::string &name);
   std::string move_to_output(const std::string &name);
   const std::string &current_output() const { return active_output_; }

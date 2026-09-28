@@ -8,7 +8,13 @@ typedef struct DiftrayYamlSection {
 #include "ConfigFields.def"
 #undef CONFIG_FIELD
 } DiftrayYamlSection;
+typedef struct DiftrayYamlMonitor {
+  char *name, *rotation, *scale, *x, *y;
+} DiftrayYamlMonitor;
 typedef struct DiftrayYaml {
+  char *program;
+  DiftrayYamlMonitor *monitors;
+  unsigned monitors_count;
   DiftrayYamlSection *general;
   DiftrayYamlSection *terminal;
 } DiftrayYaml;

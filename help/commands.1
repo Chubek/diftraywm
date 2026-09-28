@@ -39,3 +39,26 @@ Move a cell, including Notelet state and owned graphical clients.
 .TP
 :cursor move {cursor-id} cell|ncursor {destination-id}
 Change a graphical cursor's ownership, preserving its docked state.
+.TP
+:output rotate {name} {0|90|180|270}
+Rotate a connected output counter-clockwise. Focus and cells are preserved.
+.TP
+:output scale {name} {0.5-4}
+Set output scale, including fractional values such as 1.25.
+.TP
+:output position {name} {x} {y}
+Set monitor placement in logical desktop coordinates. Negative values are allowed.
+.TP
+:output position {name} auto
+Restore automatic placement. Output overrides last for this compositor session.
+
+.TP
+:config vars
+List typed configuration variables.
+.TP
+:config eval {expression}
+Evaluate a configuration function, macro, or expression and display its value.
+.TP
+:config run {expression}
+Execute a returned command string or command list in this bar's scope.
+For example: config run notebook("scratchpad").

@@ -40,6 +40,7 @@ private:
   std::map<std::string, ExtensionCommand> extensions_;
   std::vector<std::unique_ptr<CommandHandler>> handlers_;
   CommandContext *context_ = nullptr;
+  unsigned dispatch_depth_ = 0;
   std::string status_line_;
 };
 

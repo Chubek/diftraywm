@@ -32,7 +32,18 @@ typedef void (*diftray_wayland_output_handler)(void *userdata, int width,
 struct diftray_output_geometry {
   const char *name;
   int x, y, width, height;
+  int rotation;
+  float scale;
 };
+
+struct diftray_output_config {
+  int rotation;
+  float scale;
+  bool positioned;
+  int x, y;
+};
+typedef void (*diftray_output_config_handler)(void *userdata, const char *name,
+                                            struct diftray_output_config *config);
 
 struct diftray_wayland_style {
   int border_size;
@@ -52,6 +63,11 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
     struct wl_display *display, const struct diftray_wayland_style *style);
 bool diftray_wayland_runtime_start(struct diftray_wayland_runtime *runtime);
 void diftray_wayland_runtime_destroy(struct diftray_wayland_runtime *runtime);
+
+void diftray_wayland_runtime_set_output_config_handler(struct diftray_wayland_runtime *runtime,
+    diftray_output_config_handler handler, void *userdata);
+bool diftray_wayland_runtime_configure_output(struct diftray_wayland_runtime *runtime,
+    const char *name, const struct diftray_output_config *config);
 
 void diftray_wayland_runtime_set_frame_handler(struct diftray_wayland_runtime *runtime,
     void (*handler)(void *), void *userdata);

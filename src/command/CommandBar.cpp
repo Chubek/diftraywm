@@ -63,10 +63,20 @@ bool CommandBar::dispatch(std::string_view input) {
     set_status_line("command context unavailable");
     return false;
   }
+  if (dispatch_depth_ >= 16) {
+    set_status_line("command recursion limit exceeded"); return false;
+  }
+  std::string raw_input(input);
+  struct DispatchGuard {
+    unsigned &depth; CommandContext &context; std::string previous;
+    ~DispatchGuard() { --depth; context.raw_input = std::move(previous); }
+  } guard{dispatch_depth_, *context_, std::move(context_->raw_input)};
+  ++dispatch_depth_;
+  context_->raw_input = std::move(raw_input);
   for (auto &handler : handlers_) {
     if (handler && handler->matches(tokens.front())) {
       const auto result = handler->execute(tokens, scope, *context_);
-      if (!result.empty()) {
+      if (!result.empty() || tokens.front() == "config") {
         set_status_line(result);
       }
       return true;

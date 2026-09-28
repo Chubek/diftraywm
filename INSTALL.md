@@ -49,7 +49,8 @@ by PEGTL. All three share validation. Unknown fields, duplicate settings,
 unsupported structures, unreadable files and malformed values are errors;
 failed loads leave the previous configuration intact. Files are limited to
 1 MiB. Copy `examples/diftray.yaml` or `examples/diftray.toml` into your config
-directory. In YAML, quote hex colors because `#` introduces a comment.
+directory. In YAML, quote hex colors because `#` introduces a comment. See `MONITORS.md`
+for rotation, scaling, placement and connector matching.
 
 LibShell is the default terminal shell. Set `terminal.shell` to an executable
 path for an override, or use `set shell libshell` to restore the embedded shell.

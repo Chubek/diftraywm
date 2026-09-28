@@ -401,6 +401,7 @@ add_library(diftraywm_compositor STATIC
   src/compositor/Logger.cpp
   src/compositor/Signals.cpp
   src/config/Config.cpp
+  src/config/ConfigProgram.cpp
   src/config/YamlConfig.c
 )
 diftraywm_target_defaults(diftraywm_compositor)
@@ -538,7 +539,7 @@ install(FILES ${DIFTRAY_BUNDLED_NOTELETS}
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm/notelets")
 install(DIRECTORY examples DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(FILES include/DiftrayWM-Plugin.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-install(FILES EXTENSIONS.md DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
+install(FILES EXTENSIONS.md MONITORS.md CONFIGURATION.md DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(FILES diftray.conf
   DESTINATION "${CMAKE_INSTALL_DATADIR}/diftraywm")
 install(DIRECTORY themes

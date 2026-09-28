@@ -334,11 +334,39 @@ public:
     if (tokens.size() == 2 && tokens[1] == "list") return context.compositor->list_outputs();
     if (tokens.size() == 3 && tokens[1] == "focus") return context.compositor->focus_output(tokens[2]);
     if (tokens.size() == 3 && tokens[1] == "move") return context.compositor->move_to_output(tokens[2]);
-    return "output supports: list, focus <name|next|prev>, move <name>";
+    if (tokens.size() == 4 && (tokens[1] == "rotate" || tokens[1] == "scale" ||
+        (tokens[1] == "position" && tokens[3] == "auto")))
+      return context.compositor->configure_output(tokens[2], tokens[1], tokens[3]);
+    if (tokens.size() == 5 && tokens[1] == "position")
+      return context.compositor->configure_output(tokens[2], tokens[1], tokens[3], tokens[4]);
+    return "output supports: list, focus <name|next|prev>, move <name>, rotate <name> <0|90|180|270>, scale <name> <0.5..4>, position <name> <x y|auto>";
+  }
+};
+
+
+class ConfigHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "config"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "configuration unavailable";
+    if (tokens.size() == 2 && tokens[1] == "vars") return context.compositor->config_variables();
+    if (tokens.size() >= 2 && (tokens[1] == "eval" || tokens[1] == "run")) {
+      // The expression parser owns quotes and escapes; do not reconstruct from tokens.
+      size_t offset = context.raw_input.find_first_not_of(" \t\r\n");
+      for (int i = 0; i < 2; ++i) {
+        offset = context.raw_input.find_first_of(" \t\r\n", offset);
+        offset = context.raw_input.find_first_not_of(" \t\r\n", offset);
+      }
+      if (offset != std::string::npos)
+        return context.compositor->evaluate_config(context.raw_input.substr(offset), tokens[1] == "run");
+    }
+    return "config supports: vars, eval <expression>, run <expression>";
   }
 };
 
 void register_builtin_handlers(CommandBar &bar) {
+  bar.register_handler(std::make_unique<ConfigHandler>());
   bar.register_handler(std::make_unique<NCursorHandler>());
   bar.register_handler(std::make_unique<OutputHandler>());
   bar.register_handler(std::make_unique<SpawnHandler>());

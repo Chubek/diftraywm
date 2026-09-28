@@ -1,8 +1,24 @@
 #pragma once
 
+#include "config/ConfigProgram.hpp"
 #include <string>
+#include <vector>
+#include <map>
+
+struct MonitorConfig {
+  std::string name;
+  int rotation = 0; // Degrees counter-clockwise, matching Wayland transforms.
+  float scale = 1.0f;
+  bool positioned = false;
+  int x = 0, y = 0; // Logical coordinates after rotation and scaling.
+};
+
+bool parse_monitor_settings(const std::map<std::string, std::string> &settings,
+                            MonitorConfig &monitor, std::string &error);
 
 struct CompositorConfig {
+  std::shared_ptr<const ConfigProgram> program;
+  std::vector<MonitorConfig> monitors;
   int border_size = 3;
   int command_bar_height = 40;
   int status_bar_height = 24;

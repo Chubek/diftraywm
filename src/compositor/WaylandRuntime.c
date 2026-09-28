@@ -79,6 +79,8 @@ struct diftray_wayland_runtime {
   diftray_wayland_toplevel_destroy_handler toplevel_destroy_handler;
   diftray_wayland_toplevel_request_handler toplevel_request_handler;
   void *toplevel_userdata;
+  diftray_output_config_handler output_config_handler;
+  void *output_config_userdata;
   diftray_wayland_output_handler output_handler;
   void *output_userdata;
   bool command_bar_visible;
@@ -105,7 +107,7 @@ struct diftray_keyboard {
   struct wl_list link;
   struct diftray_wayland_runtime *runtime;
   struct wlr_keyboard *keyboard;
-  bool consumed_keys[256];
+  bool consumed_keys[768]; // Linux evdev KEY_MAX + 1, including extended keys.
   struct wl_listener modifiers;
   struct wl_listener key;
   struct wl_listener destroy;
@@ -323,13 +325,21 @@ static void new_output(struct wl_listener *listener, void *data) {
   struct wlr_output_state state;
   wlr_output_state_init(&state);
   wlr_output_state_set_enabled(&state, true);
+  struct diftray_output_config config = {.scale = 1.0f};
+  if (runtime->output_config_handler)
+    runtime->output_config_handler(runtime->output_config_userdata, wlr_output->name, &config);
+  wlr_output_state_set_transform(&state, (enum wl_output_transform)(config.rotation / 90));
+  wlr_output_state_set_scale(&state, config.scale);
   struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
   if (mode) {
     wlr_output_state_set_mode(&state, mode);
   }
-  bool committed = wlr_output_commit_state(wlr_output, &state);
+  bool committed = wlr_output_test_state(wlr_output, &state) && wlr_output_commit_state(wlr_output, &state);
   wlr_output_state_finish(&state);
-  if (!committed) return;
+  if (!committed) {
+    wlr_log(WLR_ERROR, "Failed to apply configuration for output %s", wlr_output->name);
+    return;
+  }
 
   struct diftray_output *output = calloc(1, sizeof(*output));
   if (!output) return;
@@ -344,7 +354,8 @@ static void new_output(struct wl_listener *listener, void *data) {
   wl_list_insert(&runtime->outputs, &output->link);
 
   struct wlr_output_layout_output *layout_output =
-      wlr_output_layout_add_auto(runtime->output_layout, wlr_output);
+      config.positioned ? wlr_output_layout_add(runtime->output_layout, wlr_output, config.x, config.y)
+                        : wlr_output_layout_add_auto(runtime->output_layout, wlr_output);
   output->scene_output = wlr_scene_output_create(runtime->scene, wlr_output);
   wlr_scene_output_layout_add_output(runtime->scene_layout, layout_output,
                                      output->scene_output);
@@ -946,7 +957,7 @@ bool diftray_wayland_runtime_output_at(struct diftray_wayland_runtime *runtime,
     struct wlr_box box;
     wlr_output_layout_get_box(runtime->output_layout, output->output, &box);
     *geometry = (struct diftray_output_geometry){output->output->name,
-        box.x, box.y, box.width, box.height};
+        box.x, box.y, box.width, box.height, (int)output->output->transform * 90, output->output->scale};
     return true;
   }
   return false;
@@ -1231,4 +1242,35 @@ void diftray_wayland_runtime_set_frame_handler(struct diftray_wayland_runtime *r
   if (!runtime) return;
   runtime->frame_handler = handler;
   runtime->frame_userdata = userdata;
+}
+
+void diftray_wayland_runtime_set_output_config_handler(struct diftray_wayland_runtime *runtime,
+    diftray_output_config_handler handler, void *userdata) {
+  if (!runtime) return;
+  runtime->output_config_handler = handler;
+  runtime->output_config_userdata = userdata;
+}
+
+bool diftray_wayland_runtime_configure_output(struct diftray_wayland_runtime *runtime,
+    const char *name, const struct diftray_output_config *config) {
+  if (!runtime || !name || !config || config->rotation < 0 || config->rotation > 270 ||
+      config->rotation % 90 || !(config->scale >= 0.5f && config->scale <= 4.f)) return false;
+  struct diftray_output *output;
+  wl_list_for_each(output, &runtime->outputs, link) {
+    if (strcmp(output->output->name, name) != 0) continue;
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_transform(&state, (enum wl_output_transform)(config->rotation / 90));
+    wlr_output_state_set_scale(&state, config->scale);
+    bool ok = wlr_output_test_state(output->output, &state) && wlr_output_commit_state(output->output, &state);
+    wlr_output_state_finish(&state);
+    if (!ok) return false;
+    if (config->positioned) wlr_output_layout_add(runtime->output_layout, output->output, config->x, config->y);
+    else wlr_output_layout_add_auto(runtime->output_layout, output->output);
+    layout_overlay(runtime);
+    notify_output_geometry(runtime);
+    wlr_output_schedule_frame(output->output);
+    return true;
+  }
+  return false;
 }

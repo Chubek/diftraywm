@@ -17,7 +17,11 @@ monitor. `Meta+1` through `Meta+0` switches the shared workspace. `Meta+[` and
 Run `output move <monitor>` to transfer the active NCursor. Run
 `cell move <cell-id> <ncursor-id>` to move an individual terminal or Notelet.
 GCursors owned by that cell follow it. Disconnecting a monitor migrates its
-views to a surviving output.
+views to a surviving output. `output rotate <monitor> 90` rotates counter-clockwise;
+0, 180 and 270 are also supported. `output scale <monitor> 1.25` changes scale,
+and `output position <monitor> <x> <y>` sets logical placement (`auto` restores
+automatic placement). [MONITORS.md](MONITORS.md) documents persistent settings
+in YAML, TOML and the DSL.
 
 Graphical applications launched by a shell become GCursors. `Meta+D` opens the
 launcher. `cursor dock <id>` hides a GCursor; `cursor restore <id>` returns to it.

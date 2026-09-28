@@ -4,7 +4,10 @@ Implemented and exercised in this change:
 
 - Per-output logical geometry, separate visible NCursor/GCursor views, per-output
   tab focus, keyboard monitor focus, output movement and unplug migration.
-  Workspace selection is shared across outputs.
+  Workspace selection is shared across outputs. Per-monitor rotation, fractional
+  scaling and explicit/automatic placement are configured in YAML, TOML or the
+  DSL, with live Command Bar updates and retained overrides on reconnection.
+  Notelets automatically refresh their monitor snapshots on output changes.
 - Command-based NCursor listing/creation and cell/GCursor ownership transfer.
   Cursor-area references are removed when clients disappear, and graphical
   clients can outlive their launching cell.
@@ -24,7 +27,8 @@ Implemented and exercised in this change:
   scoped commands, event subscriptions and failed-initialization rollback.
 
 Validation: twelve CTest targets cover existing behavior, multiple-output
-navigation/movement, three actual wlroots headless outputs, asynchronous Notelet
+navigation/movement, three actual wlroots headless outputs with startup/live rotation, fractional
+scaling, placement, focus preservation and Notelet output events, asynchronous Notelet
 rendering/cancellation, Unicode editing, terminal display and input backpressure,
 configuration formats, extension lifecycle/failure handling, and real PTY shell commands and interruption.
 Physical monitors, GPU backends and interactive input were not verified in this
@@ -45,7 +49,17 @@ The full AGENTS.md specification is **not complete**. Known remaining work:
   terminal styling constants still need conversion to theme properties.
 - Docking hides clients but does not yet suspend their process trees. Launcher
   ancestry tracking and grouping additional graphical surfaces need expansion.
-- Monitor placement is automatic; output-management protocol configuration and
-  independent workspace selection per monitor are not implemented.
+- The external output-management protocol and independent workspace selection
+  per monitor are not implemented. Configuration and Command Bar output controls
+  are available.
 
 This file records outstanding functionality; it is not a completion claim.
+
+
+Configuration programs now provide immutable typed variables, distinct physical
+keycodes and layout keysyms, eager functions, lazy expression macros, and scoped
+bindings in all three formats. Setting expressions also cover monitor rotation.
+The Command Bar exposes config vars/eval/run. Parser, evaluator, and command
+recursion limits are enforced; examples and semantics are in CONFIGURATION.md.
+The 13-test suite includes config evaluation, format equivalence, physical-key
+precedence, scope restoration, Notelet macros, and headless multi-output tests.

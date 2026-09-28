@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <cmath>
 #include <toml.h>
 #include "config/YamlConfig.h"
 
@@ -28,7 +29,25 @@ struct section
     : pegtl::seq<space, identifier, space, pegtl::one<'{'>, pegtl::eolf,
                  pegtl::star<pegtl::sor<assignment, blank_line, comment_line>>, space, pegtl::one<'}'>,
                  pegtl::opt<pegtl::eolf>> {};
-struct grammar : pegtl::must<pegtl::star<pegtl::sor<section, blank_line, comment_line>>, pegtl::eof> {};
+struct program_string : pegtl::seq<pegtl::one<'"'>,
+    pegtl::star<pegtl::sor<pegtl::seq<pegtl::one<'\\'>, pegtl::any>, pegtl::not_one<'"'>>>,
+    pegtl::one<'"'>> {};
+struct program_comment : pegtl::seq<pegtl::one<'#'>, pegtl::until<pegtl::eolf>> {};
+struct program_block : pegtl::seq<space, TAO_PEGTL_STRING("program"), space, pegtl::one<'{'>,
+    pegtl::star<pegtl::sor<program_string, program_comment, pegtl::not_one<'}'>>>,
+    pegtl::one<'}'>, pegtl::opt<pegtl::eolf>> {};
+struct ProgramSource { std::string text; size_t offset = 0, length = 0; bool found = false; };
+template<class Rule> struct config_action : pegtl::nothing<Rule> {};
+template<> struct config_action<program_block> {
+  template<class Input> static void apply(const Input &input, ProgramSource &out) {
+    if (out.found) throw std::runtime_error("duplicate program block");
+    const auto text = input.string();
+    const auto begin = text.find('{');
+    out.text = text.substr(begin + 1, text.rfind('}') - begin - 1);
+    out.offset = input.position().byte; out.length = text.size(); out.found = true;
+  }
+};
+struct grammar : pegtl::must<pegtl::star<pegtl::sor<program_block, section, blank_line, comment_line>>, pegtl::eof> {};
 
 std::string trim(std::string text) {
   const auto begin = text.find_first_not_of(" \t\r\n");
@@ -62,6 +81,41 @@ bool parse_color(std::string_view value, float out[4]) {
   }
   return true;
 }
+}
+
+bool parse_monitor_settings(const std::map<std::string, std::string> &settings,
+                            MonitorConfig &monitor, std::string &error) {
+  auto candidate = monitor;
+  if (settings.count("x") != settings.count("y")) {
+    error = "monitor position requires both x and y"; return false;
+  }
+  for (const auto &[key, value] : settings) {
+    if (key == "name") candidate.name = value;
+    else if (key == "rotation") {
+      if (!parse_int(value, candidate.rotation) || candidate.rotation < 0 ||
+          candidate.rotation > 270 || candidate.rotation % 90 != 0) {
+        error = "monitor rotation must be 0, 90, 180 or 270"; return false;
+      }
+    } else if (key == "scale") {
+      const auto result = std::from_chars(value.data(), value.data() + value.size(), candidate.scale);
+      if (result.ec != std::errc() || result.ptr != value.data() + value.size() ||
+          !std::isfinite(candidate.scale) || candidate.scale < 0.5f || candidate.scale > 4.f) {
+        error = "monitor scale must be a finite number from 0.5 to 4"; return false;
+      }
+    } else if (key == "x" || key == "y") {
+      int &coordinate = key == "x" ? candidate.x : candidate.y;
+      if (!parse_int(value, coordinate) || coordinate < -100000 || coordinate > 100000) {
+        error = "monitor coordinates must be integers from -100000 to 100000"; return false;
+      }
+      candidate.positioned = true;
+    } else { error = "unknown monitor setting: " + key; return false; }
+  }
+  if (candidate.name.empty() || candidate.name.size() > 256 ||
+      candidate.name.find_first_of("\r\n\t") != std::string::npos) {
+    error = "monitor name is required and must be at most 256 characters"; return false;
+  }
+  monitor = std::move(candidate);
+  return true;
 }
 
 namespace {
@@ -155,12 +209,41 @@ bool add(Settings &settings, const std::string &key, std::string value, std::str
   }
   return true;
 }
-bool parse_toml(std::string source, Settings &settings, std::string &error) {
+bool parse_toml(std::string source, Settings &settings, std::vector<Settings> &monitors, std::string &program, std::string &error) {
   char diagnostic[512]{};
   std::unique_ptr<toml_table_t, decltype(&toml_free)> root(
       toml_parse(source.data(), diagnostic, sizeof(diagnostic)), toml_free);
   if (!root) { error = diagnostic; return false; }
   for (int section_index = 0; const char *section = toml_key_in(root.get(), section_index); ++section_index) {
+    if (std::string_view(section) == "program") {
+      auto value = toml_string_in(root.get(), section);
+      if (!value.ok) { error = "program must be a string"; return false; }
+      program = value.u.s; std::free(value.u.s); continue;
+    }
+    if (std::string_view(section) == "monitors") {
+      auto *array = toml_array_in(root.get(), section);
+      if (!array || toml_array_nelem(array) > 64) { error = "monitors must be an array of at most 64 tables"; return false; }
+      for (int i = 0; i < toml_array_nelem(array); ++i) {
+        auto *table = toml_table_at(array, i);
+        if (!table) { error = "monitor must be a table"; return false; }
+        Settings fields;
+        for (int j = 0; const char *key = toml_key_in(table, j); ++j) {
+          auto value = toml_string_in(table, key);
+          std::string text;
+          if (value.ok) { text = value.u.s; std::free(value.u.s); }
+          else if ((value = toml_int_in(table, key)).ok) text = std::to_string(value.u.i);
+          else if (std::string_view(key) == "scale" && (value = toml_double_in(table, key)).ok) {
+            char number[64];
+            const auto result = std::to_chars(number, number + sizeof(number), value.u.d);
+            if (result.ec != std::errc()) { error = "invalid monitor scale"; return false; }
+            text.assign(number, result.ptr);
+          } else { error = "invalid monitor value: " + std::string(key); return false; }
+          fields.emplace(key, std::move(text));
+        }
+        monitors.push_back(std::move(fields));
+      }
+      continue;
+    }
     auto *table = toml_table_in(root.get(), section);
     if (!table || (std::string_view(section) != "general" && std::string_view(section) != "terminal")) {
       error = "expected general or terminal table: " + std::string(section); return false;
@@ -179,7 +262,7 @@ bool parse_toml(std::string source, Settings &settings, std::string &error) {
   }
   return true;
 }
-bool parse_yaml(const std::string &source, Settings &settings, std::string &error) {
+bool parse_yaml(const std::string &source, Settings &settings, std::vector<Settings> &monitors, std::string &program, std::string &error) {
   DiftrayYaml *document = nullptr;
   char diagnostic[512]{};
   if (!diftray_yaml_load(source.data(), source.size(), &document, diagnostic, sizeof(diagnostic))) {
@@ -187,6 +270,15 @@ bool parse_yaml(const std::string &source, Settings &settings, std::string &erro
   }
   std::unique_ptr<DiftrayYaml, decltype(&diftray_yaml_free)> owned(document, diftray_yaml_free);
   if (!document) return true;
+  if (document->program) program = document->program;
+  for (unsigned i = 0; i < document->monitors_count; ++i) {
+    const auto &monitor = document->monitors[i];
+    Settings fields;
+    for (const auto &[key, value] : {std::pair{"name", monitor.name}, {"rotation", monitor.rotation},
+                                  {"scale", monitor.scale}, {"x", monitor.x}, {"y", monitor.y}})
+      if (value) fields.emplace(key, value);
+    monitors.push_back(std::move(fields));
+  }
   for (auto *section : {document->general, document->terminal}) {
     if (!section) continue;
 #define CONFIG_FIELD(key) if (section->key && !add(settings, #key, section->key, error)) return false;
@@ -211,34 +303,66 @@ bool load_compositor_config(const std::string &path, CompositorConfig &config,
   if (input.bad()) { error = "cannot read configuration: " + path; return false; }
   if (source.find('\0') != std::string::npos) { error = "configuration contains NUL"; return false; }
   Settings settings;
+  std::vector<Settings> monitors;
+  std::string program;
   const auto extension = std::filesystem::path(path).extension();
   if (extension == ".toml") {
-    if (!parse_toml(source, settings, error)) return false;
+    if (!parse_toml(source, settings, monitors, program, error)) return false;
   } else if (extension == ".yaml" || extension == ".yml") {
-    if (!parse_yaml(source, settings, error)) return false;
+    if (!parse_yaml(source, settings, monitors, program, error)) return false;
   } else {
     try {
       pegtl::memory_input parser_input(source, path);
-      pegtl::parse<grammar>(parser_input);
-    } catch (const pegtl::parse_error &exception) { error = exception.what(); return false; }
+      ProgramSource extracted;
+      pegtl::parse<grammar, config_action>(parser_input, extracted);
+      program = std::move(extracted.text);
+      for (size_t i = extracted.offset; i < extracted.offset + extracted.length; ++i)
+        if (source[i] != '\n' && source[i] != '\r') source[i] = ' ';
+    } catch (const std::exception &exception) { error = exception.what(); return false; }
+    Settings *current = &settings;
     std::istringstream lines(source);
     for (std::string line; std::getline(lines, line);) {
       line = trim(std::move(line));
       if (line.empty() || line.front() == '#') continue;
       const auto brace = line.find('{');
-      if (brace != std::string::npos) {
+      const auto equals = line.find('=');
+      if (brace != std::string::npos && equals == std::string::npos) {
         const auto section = trim(line.substr(0, brace));
-        if (section != "general" && section != "terminal") {
+        if (section == "monitor") {
+          if (monitors.size() >= 64) { error = "at most 64 monitors may be configured"; return false; }
+          monitors.emplace_back(); current = &monitors.back();
+        } else if (section == "general" || section == "terminal") current = &settings;
+        else {
           error = "unknown section: " + section; return false;
         }
       }
-      const auto equals = line.find('=');
       if (equals == std::string::npos) continue;
-      if (!add(settings, trim(line.substr(0, equals)), trim(line.substr(equals + 1)), error)) return false;
+      if (!add(*current, trim(line.substr(0, equals)), trim(line.substr(equals + 1)), error)) return false;
     }
   }
   auto candidate = config;
+  candidate.program = ConfigProgram::compile(program, path + ":program", error);
+  if (!candidate.program) return false;
+  auto expand = [&](Settings &fields) {
+    for (auto &[key, value] : fields) {
+      std::string expanded;
+      if (!candidate.program->expand(value, expanded, error)) { error = path + ":" + key + ": " + error; return false; }
+      value = std::move(expanded);
+    }
+    return true;
+  };
+  if (!expand(settings)) return false;
+  for (auto &fields : monitors) if (!expand(fields)) return false;
   if (!apply(settings, candidate, error)) { error = path + ": " + error; return false; }
+  candidate.monitors.clear();
+  for (const auto &fields : monitors) {
+    MonitorConfig monitor;
+    if (!parse_monitor_settings(fields, monitor, error)) { error = path + ": " + error; return false; }
+    if (std::any_of(candidate.monitors.begin(), candidate.monitors.end(), [&](const auto &m) { return m.name == monitor.name; })) {
+      error = path + ": duplicate monitor: " + monitor.name; return false;
+    }
+    candidate.monitors.push_back(std::move(monitor));
+  }
   config = std::move(candidate);
   return true;
 }

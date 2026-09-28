@@ -12,6 +12,7 @@ class ThemeEngine;
 class View;
 
 struct CommandContext {
+  std::string raw_input;
   Compositor *compositor = nullptr;
   View *active_view = nullptr;
   NCursorView *ncursor_view = nullptr;

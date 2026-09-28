@@ -76,7 +76,10 @@ views, and remembered focus are per monitor. Workspace switching is global and
 creates a terminal on each output the first time that workspace is visited.
 Hot-unplug migrates views to a surviving monitor; reconnecting after all outputs
 were removed restores the desktop. Logical output coordinates account for scale
-and transform.
+and transform. Configure per-monitor rotation, scale and position in any supported
+config format; see [MONITORS.md](MONITORS.md). Rotation is counter-clockwise and
+accepts 0, 90, 180 or 270 degrees. Live adjustments use `output rotate DP-1 90`,
+`output scale DP-1 1.25`, and `output position DP-1 -1080 0`.
 
 ```
 output list
@@ -147,3 +150,7 @@ Lua/Kaguya extensions and dynalo native plugins can register Command Bar
 commands and subscribe to input, view and frame events. See
 [EXTENSIONS.md](EXTENSIONS.md) and [examples/notebook.lua](examples/notebook.lua)
 for Notelet command shortcuts.
+
+Configuration programs support typed keycodes and keysyms, variables, functions,
+and lazy macros in DSL, TOML, and YAML. See [CONFIGURATION.md](CONFIGURATION.md)
+for bindings, setting expressions, and Notelet macro examples.

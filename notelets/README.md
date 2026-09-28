@@ -27,9 +27,11 @@ is replaced. The authoring library binds `notelet` to the native module,
 | `notelet:get "name"` | Persisted string, or `nil` |
 | `notelet:set "name" "value"` | Persist a string for later renders |
 | `notelet:erase "name"` | Remove a state entry; returns whether it existed |
-| `notelet:event` | `open`, `key`, `resize`, `refresh`, or `move` |
+| `notelet:event` | `open`, `key`, `resize`, `refresh`, `move`, or `outputs` |
 | `notelet:context "columns"` / `"rows"` | Cell dimensions as strings |
 | `notelet:context "cell"` / `"workspace"` / `"output"` | Instance location |
+| `notelet:context "rotation"` / `"scale"` | Owning monitor rotation in counter-clockwise degrees and scale, as strings |
+| `notelet:context "output_width"` / `"output_height"` | Owning monitor logical dimensions as strings |
 | `notelet:context "outputs"` / `"cursors"` | Desktop snapshots |
 | `notelet:edit "name"` | Edit a state string using the current key; supports Unicode, Enter, Tab, and Backspace |
 
@@ -54,3 +56,14 @@ uses the context API as an inspector. `hello` demonstrates resources and state.
 Bundles are limited to 4 MiB, entries to 1 MiB, and rendered output to
 64 KiB. `notelet:set` allows 128 keys with values up to 4 KiB. Bundles may
 contain only the three entry types above, and are validated before use.
+
+The `outputs` event refreshes every open Notelet after monitor geometry, rotation,
+scale or connection changes, including a 180-degree rotation without a resize.
+
+
+Configuration macros can compose Notelet commands with workspace and NCursor
+operations. For example, define
+`macro notebook(name) = commands("ncursor new", "notelet open " + name);`
+and call `config run notebook("scratchpad")` from a Command Bar, or use
+`notebook("scratchpad")` as a binding action. See
+[configuration programs](../CONFIGURATION.md) for all three file formats.

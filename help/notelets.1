@@ -22,3 +22,8 @@ Close the focused Notelet cell.
 .SH SEE ALSO
 See notelets/README.md in the DiftrayWM source tree for the archive format and
 Termscript authoring API.
+.SH MONITOR EVENTS
+Monitor rotation, scale, geometry and connection changes send an outputs event
+and refresh desktop snapshots automatically. The context API exposes rotation,
+scale, output_width and output_height as strings. Rotation is counter-clockwise;
+output dimensions are logical dimensions after rotation and scaling.

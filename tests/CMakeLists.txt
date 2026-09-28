@@ -50,9 +50,9 @@ diftraywm_target_defaults(diftraywm_nterm_input_test)
 target_link_libraries(diftraywm_nterm_input_test PRIVATE diftraywm_nterm)
 add_test(NAME diftraywm_nterm_input_test COMMAND diftraywm_nterm_input_test)
 
-add_executable(diftraywm_config_test config.cpp ../src/config/Config.cpp ../src/config/YamlConfig.c)
+add_executable(diftraywm_config_test config.cpp ../src/config/ConfigProgram.cpp ../src/config/Config.cpp ../src/config/YamlConfig.c)
 target_include_directories(diftraywm_config_test PRIVATE ../src ${DIFTRAY_THIRD_PARTY}/PEGTL/include)
-target_link_libraries(diftraywm_config_test PRIVATE diftray_cyaml diftray_toml)
+target_link_libraries(diftraywm_config_test PRIVATE diftray_cyaml diftray_toml PkgConfig::WLROOTS_BUILD_DEPS)
 add_test(NAME diftraywm_config_test COMMAND diftraywm_config_test)
 
 add_library(diftraywm_test_plugin MODULE extension_plugin.c)
@@ -84,3 +84,9 @@ add_test(NAME diftraywm_extension_cli_test COMMAND ${CMAKE_COMMAND} -E env
   $<TARGET_FILE:diftray> --command scratchpad)
 set_tests_properties(diftraywm_extension_cli_test PROPERTIES
   PASS_REGULAR_EXPRESSION "opened notelet scratchpad" TIMEOUT 10)
+
+add_executable(diftraywm_config_program_test config_program.cpp)
+diftraywm_target_defaults(diftraywm_config_program_test)
+diftraywm_link_exe(diftraywm_config_program_test)
+add_test(NAME diftraywm_config_program_test COMMAND diftraywm_config_program_test)
+set_tests_properties(diftraywm_config_program_test PROPERTIES TIMEOUT 10)

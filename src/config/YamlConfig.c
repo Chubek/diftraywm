@@ -8,7 +8,20 @@ static const cyaml_schema_field_t fields[] = {
 #undef CONFIG_FIELD
   CYAML_FIELD_END
 };
+static const cyaml_schema_field_t monitor_fields[] = {
+  CYAML_FIELD_STRING_PTR("name", CYAML_FLAG_DEFAULT, DiftrayYamlMonitor, name, 1, 256),
+  CYAML_FIELD_STRING_PTR("rotation", CYAML_FLAG_OPTIONAL, DiftrayYamlMonitor, rotation, 1, 65536),
+  CYAML_FIELD_STRING_PTR("scale", CYAML_FLAG_OPTIONAL, DiftrayYamlMonitor, scale, 1, 65536),
+  CYAML_FIELD_STRING_PTR("x", CYAML_FLAG_OPTIONAL, DiftrayYamlMonitor, x, 1, 65536),
+  CYAML_FIELD_STRING_PTR("y", CYAML_FLAG_OPTIONAL, DiftrayYamlMonitor, y, 1, 65536),
+  CYAML_FIELD_END
+};
+static const cyaml_schema_value_t monitor_schema = {
+  CYAML_VALUE_MAPPING(CYAML_FLAG_DEFAULT, DiftrayYamlMonitor, monitor_fields)
+};
 static const cyaml_schema_field_t sections[] = {
+  CYAML_FIELD_STRING_PTR("program", CYAML_FLAG_OPTIONAL, DiftrayYaml, program, 0, 262144),
+  CYAML_FIELD_SEQUENCE("monitors", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, DiftrayYaml, monitors, &monitor_schema, 0, 64),
   CYAML_FIELD_MAPPING_PTR("general", CYAML_FLAG_OPTIONAL, DiftrayYaml, general, fields),
   CYAML_FIELD_MAPPING_PTR("terminal", CYAML_FLAG_OPTIONAL, DiftrayYaml, terminal, fields),
   CYAML_FIELD_END

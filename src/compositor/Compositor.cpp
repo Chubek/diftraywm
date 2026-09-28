@@ -210,6 +210,10 @@ bool Compositor::init() {
   // variable to connect to the parent compositor; replacing it with our
   // newly-created socket here makes it connect back to itself.  Children
   // launched by DiftrayWM are given our socket below, after backend startup.
+  diftray_wayland_runtime_set_output_config_handler(wayland_runtime_, [](void *data, const char *name, diftray_output_config *out) {
+    const auto monitor = static_cast<Compositor *>(data)->monitor_config(name);
+    *out = {monitor.rotation, monitor.scale, monitor.positioned, monitor.x, monitor.y};
+  }, this);
   diftray_wayland_runtime_set_frame_handler(wayland_runtime_, [](void *data) {
     static_cast<Compositor *>(data)->notify_extensions("frame");
   }, this);
@@ -357,7 +361,12 @@ void Compositor::request_notelet(Cell *cell, const std::string &key, const std::
   auto it = notelet_cells_.find(cell);
   if (it == notelet_cells_.end() || !cell->nterm()) return;
   auto *owner = owner_ncursor(cell);
-  it->second->set_context({{"columns", std::to_string(cell->nterm()->columns())},
+  const auto output = outputs_.find(owner ? owner->output_name() : active_output_);
+  const auto geometry = output != outputs_.end() ? output->second.geometry : OutputGeometry{};
+  it->second->set_context({{"rotation", std::to_string(geometry.rotation)},
+      {"scale", std::to_string(geometry.scale)},
+      {"output_width", std::to_string(geometry.width)}, {"output_height", std::to_string(geometry.height)},
+      {"columns", std::to_string(cell->nterm()->columns())},
       {"rows", std::to_string(cell->nterm()->rows())}, {"cell", cell->id()},
       {"workspace", std::to_string(owner ? owner->workspace() : current_workspace_)},
       {"output", owner ? owner->output_name() : active_output_},
@@ -607,10 +616,10 @@ int Compositor::terminal_fd_ready(int fd, uint32_t mask, void *data) {
 
 bool Compositor::terminal_key_received(void *userdata, uint32_t keysym,
                                        uint32_t modifiers, uint32_t state,
-                                       uint32_t unicode, uint32_t, uint32_t) {
+                                       uint32_t unicode, uint32_t, uint32_t keycode) {
   auto *compositor = static_cast<Compositor *>(userdata);
   if (compositor) compositor->notify_extensions("input");
-  return compositor && compositor->handle_key(keysym, modifiers, state, unicode);
+  return compositor && compositor->handle_key(keysym, modifiers, state, unicode, keycode);
 }
 
 void Compositor::handle_new_toplevel(void *userdata, wlr_xdg_toplevel *toplevel,
@@ -667,7 +676,7 @@ void Compositor::on_output_geometry(int width, int height) {
   std::vector<OutputGeometry> geometry;
   diftray_output_geometry item{};
   for (size_t i = 0; diftray_wayland_runtime_output_at(wayland_runtime_, i, &item); ++i)
-    geometry.push_back({item.name, item.x, item.y, item.width, item.height});
+    geometry.push_back({item.name, item.x, item.y, item.width, item.height, item.rotation, item.scale});
   synchronize_outputs(geometry);
 }
 
@@ -856,7 +865,7 @@ bool Compositor::feed_command_bar_key(uint32_t keysym, uint32_t unicode) {
 }
 
 bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
-                            uint32_t unicode) {
+                            uint32_t unicode, uint32_t keycode) {
   if (state != WL_KEYBOARD_KEY_STATE_PRESSED) {
     return command_bar_open_ || active_gcursor() == nullptr;
   }
@@ -882,6 +891,23 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
   }
   if (command_bar_open_ && !(meta && keysym == XKB_KEY_colon)) {
     return feed_command_bar_key(keysym, unicode);
+  }
+  if (config_.program && !(help_pager_active_ && !meta)) {
+    // Physical bindings take precedence when both match the same event.
+    for (bool physical : {true, false}) {
+      for (const auto &binding : config_.program->bindings()) {
+        if (std::holds_alternative<ConfigKeycode>(binding.key) != physical ||
+            !binding.matches(keysym, keycode, modifiers)) continue;
+        const auto saved_scope = command_bar_.scope;
+        command_bar_.scope = binding.global ? CommandScope::NCURSOR_GLOBAL : CommandScope::CELL;
+        for (const auto &command : binding.commands)
+          if (!command_bar_.dispatch(command)) break;
+        command_bar_.scope = saved_scope;
+        status_line_ = command_bar_.status_line();
+        update_chrome();
+        return true;
+      }
+    }
   }
   if (meta && (keysym == XKB_KEY_colon || keysym == XKB_KEY_semicolon)) {
     open_command_bar(CommandScope::NCURSOR_GLOBAL, "");
@@ -1725,4 +1751,26 @@ void Compositor::flush_extension_commands() {
     status_line_ = command_bar_.status_line();
     update_chrome();
   }
+}
+
+
+std::string Compositor::evaluate_config(const std::string &expression, bool run) {
+  if (!config_.program) return "configuration program unavailable";
+  ConfigValue value;
+  std::string error;
+  if (!config_.program->evaluate(expression, value, error)) return error;
+  if (!run) return ConfigProgram::describe(value);
+  std::vector<std::string> commands;
+  if (!ConfigProgram::commands(value, commands, error)) return error;
+  for (const auto &command : commands)
+    if (!command_bar_.dispatch(command)) break;
+  return command_bar_.status_line();
+}
+
+std::string Compositor::config_variables() const {
+  if (!config_.program) return "configuration program unavailable";
+  std::string result;
+  for (const auto &[name, value] : config_.program->variables())
+    result += name + " = " + ConfigProgram::describe(value) + "\n";
+  return result.empty() ? "no configuration variables" : result;
 }
