@@ -11,9 +11,11 @@
 #include <libtsm.h>
 
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
@@ -154,6 +156,42 @@ main() {
                   << "\", got \"" << got << "\"\n";
         return EXIT_FAILURE;
       }
+    }
+  }
+
+  // A Termscript program can inspect and write this cell without a PTY.
+  {
+    term.display("\x1b[2J\x1b[H");
+    char path[] = "/tmp/diftray-terminal-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) return EXIT_FAILURE;
+    close(fd);
+    {
+      std::ofstream script(path);
+      script << "const T = G:load \"diftray.terminal\";\n"
+                "T:display \"script\";\n"
+                "const accepted = T:send \"input\";\n"
+                "const V = G:load \"std.vterm\";\n"
+                "const grid = V:new 2 8;\n"
+                "V:feed grid \"ok\";\n"
+                "const preview = V:text grid;\n"
+                "const cursor = T:cursor;\n"
+                "const size = T:size;\n"
+                "const screen = T:screen;\n"
+                "G:puts accepted;\n"
+                "G:puts preview;\n"
+                "G:puts cursor;\n"
+                "G:puts size;\n"
+                "G:puts screen;\n";
+    }
+    const std::string result = term.run_script(path);
+    unlink(path);
+    if (result.find("false\nok") == std::string::npos ||
+        result.find("0,6") == std::string::npos ||
+        result.find("8,40") == std::string::npos ||
+        result.find("script") == std::string::npos) {
+      std::cerr << "terminal script did not control and inspect cell: " << result << '\n';
+      return EXIT_FAILURE;
     }
   }
 

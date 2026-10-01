@@ -1,6 +1,7 @@
 #include "command/CommandBar.hpp"
 
 #include "compositor/Compositor.hpp"
+#include "nterm/NTerm.hpp"
 #include "keymap/Keymap.hpp"
 #include "theme/ThemeEngine.hpp"
 #include "views/Cell.hpp"
@@ -482,6 +483,19 @@ public:
   }
 };
 
+class TerminalHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "terminal"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (tokens.size() < 3 || tokens[1] != "script")
+      return "terminal supports: script <path.tsc>";
+    if (!context.active_cell || !context.active_cell->nterm())
+      return "terminal script requires an active cell";
+    return context.active_cell->nterm()->run_script(join_tokens(tokens, 2));
+  }
+};
+
 class LauncherHandler final : public CommandHandler {
 public:
   bool matches(std::string_view command) const override { return command == "launcher"; }
@@ -652,6 +666,7 @@ void register_builtin_handlers(CommandBar &bar) {
   bar.register_handler(std::make_unique<PluginHandler>());
   bar.register_handler(std::make_unique<ExtensionHandler>());
   bar.register_handler(std::make_unique<ScriptHandler>());
+  bar.register_handler(std::make_unique<TerminalHandler>());
   bar.register_handler(std::make_unique<SessionHandler>());
   bar.register_handler(std::make_unique<LauncherHandler>());
   bar.register_handler(std::make_unique<KeymapHandler>());

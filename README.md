@@ -190,6 +190,25 @@ names. Empty entries are ignored.
 See [notelets/README.md](notelets/README.md) for packaging and the Termscript
 authoring API.
 
+To automate the active terminal cell, run `:terminal script path/to/file.tsc`
+from its Command Bar. The script can use Termlib's Termscript standard library
+and its `diftray.terminal` module:
+
+```termscript
+const terminal = G:load "diftray.terminal";
+const text = terminal:screen;
+G:puts text;
+terminal:display "Hello from Termscript!";
+```
+
+`screen` captures the visible Unicode grid, `cursor` returns its zero-based
+`row,column`, and `size` returns `rows,columns`. `display` renders content
+without involving the shell; `send` writes input to the cell's PTY and returns
+false if no PTY is attached. `running` reports whether the shell is active.
+The compositor retains libtsm for the rendered VT grid and its color and
+Unicode attributes; Termscript's `std.vterm` is also available as a separate
+character-grid helper for scripts.
+
 ## Help
 
 `:help` opens the help index; `:help help-pager` explains pager navigation and

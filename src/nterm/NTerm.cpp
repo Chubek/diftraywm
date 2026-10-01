@@ -15,9 +15,6 @@ extern int diftraywm_run_embedded_shell();
 
 #include <libptytty.h>
 #include <libtsm.h>
-extern "C" {
-#include <vterm.h>
-}
 
 ptytty *pty_handle(void *ptr) { return static_cast<ptytty *>(ptr); }
 
@@ -47,17 +44,10 @@ NTerm::NTerm(std::string shell_override) : shell_path_(std::move(shell_override)
       tsm_vte_set_backspace_sends_delete(vte_, true);
     }
   }
-  vterm_ = vterm_create(static_cast<uint16_t>(columns_),
-                        static_cast<uint16_t>(rows_),
-                        VTERM_FLAG_NOPTY | VTERM_FLAG_NOCURSES | VTERM_FLAG_XTERM_256);
 }
 
 NTerm::~NTerm() {
   stop();
-  if (vterm_) {
-    vterm_destroy(vterm_);
-    vterm_ = nullptr;
-  }
   if (vte_) {
     tsm_vte_unref(vte_);
     vte_ = nullptr;
@@ -183,10 +173,6 @@ void NTerm::feed_parsers(std::string_view bytes) {
   if (vte_) {
     tsm_vte_input(vte_, bytes.data(), bytes.size());
   }
-  if (vterm_) {
-    std::vector<char> copy(bytes.begin(), bytes.end());
-    vterm_render(vterm_, copy.data(), static_cast<int>(copy.size()));
-  }
   dirty_ = true;
 }
 
@@ -245,10 +231,6 @@ void NTerm::resize(std::size_t columns, std::size_t rows) {
   if (screen_) {
     tsm_screen_resize(screen_, static_cast<unsigned>(columns_),
                       static_cast<unsigned>(rows_));
-  }
-  if (vterm_) {
-    vterm_resize_full(vterm_, static_cast<uint16_t>(columns_),
-                      static_cast<uint16_t>(rows_), 0, 0, 0, 0);
   }
   if (master_fd_ >= 0) {
     struct winsize size {};

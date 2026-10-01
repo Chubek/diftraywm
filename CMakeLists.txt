@@ -44,7 +44,7 @@ if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}")
     "not exist. Restore the vendored trees described in AGENTS.md section 11.")
 endif()
 
-set(_diftraywm_vendored_required wlroots domterm libvterm libtsm libptytty PEGTL oniguruma libshell lua kaguya dynalo libcyaml tomlc99 libevdev libudev)
+set(_diftraywm_vendored_required wlroots domterm termlib libtsm libptytty PEGTL oniguruma libshell lua kaguya dynalo libcyaml tomlc99 libevdev libudev)
 set(_diftraywm_vendored_missing "")
 foreach(_dep IN LISTS _diftraywm_vendored_required)
   if(NOT IS_DIRECTORY "${DIFTRAY_THIRD_PARTY}/${_dep}")
@@ -66,14 +66,14 @@ find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(Perl REQUIRED)
 
-# The vendored domterm generates the Termscript parser with this script and
-# hard-codes its path, so a missing copy only shows up much later as an opaque
+# The vendored termlib generates the Termscript parser with its own script;
+# a missing copy only shows up much later as an opaque
 # "No rule to make target" from the generator.  Check it while we can still
 # explain it.
-set(DIFTRAY_AUROCKS "${DIFTRAYWM_ROOT}/scripts/aurocks.pl")
+set(DIFTRAY_AUROCKS "${DIFTRAY_THIRD_PARTY}/termlib/scripts/aurocks.pl")
 if(NOT EXISTS "${DIFTRAY_AUROCKS}")
   message(FATAL_ERROR
-    "${DIFTRAY_AUROCKS} is missing. third_party/domterm compiles "
+    "${DIFTRAY_AUROCKS} is missing. third_party/termlib compiles "
     "termscript/Termscript.g with it to produce termscript_parser.c, and "
     "refuses to build without it.")
 endif()
@@ -190,13 +190,26 @@ set_target_properties(wlroots::wlroots PROPERTIES
 add_dependencies(wlroots::wlroots wlroots_ep)
 
 # ---------------------------------------------------------------------------
-# domterm: Termscript plus its standard library
+# termlib: Termscript plus its standard library
 # ---------------------------------------------------------------------------
 # Provides the `termscript`, `termscript_standalone`, `termscript_stdlib`,
-# `domterm` and `termscript-driver` targets, and installs the stdlib .tsc
+# `termlib` and `termscript-driver` targets, and installs the stdlib .tsc
 # companions that notelets import at run time.
-add_subdirectory("${DIFTRAY_THIRD_PARTY}/domterm"
-                 "${CMAKE_CURRENT_BINARY_DIR}/domterm")
+# The supplied Termlib checkout lacks stdlib/env; the predecessor vendored
+# alongside it has this module. Assemble an out-of-source build copy so the
+# full stdlib is usable without editing either vendored tree.
+set(DIFTRAY_TERMLIB "${DIFTRAY_THIRD_PARTY}/termlib")
+set(DIFTRAY_TERMLIB_BUILD_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/termlib-source")
+file(COPY "${DIFTRAY_TERMLIB}/" DESTINATION "${DIFTRAY_TERMLIB_BUILD_SOURCE}")
+file(COPY "${DIFTRAY_THIRD_PARTY}/domterm/termscript/stdlib/env/"
+  DESTINATION "${DIFTRAY_TERMLIB_BUILD_SOURCE}/termscript/stdlib/env")
+add_subdirectory("${DIFTRAY_TERMLIB_BUILD_SOURCE}"
+                 "${CMAKE_CURRENT_BINARY_DIR}/termlib")
+# Termlib's optional stdlib registration is weak; make the static archive
+# reachable even in small executables that only use the VM through Notelet.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_link_options(termscript INTERFACE "LINKER:-u,ts_stdlib_register_all")
+endif()
 
 # Help-page searches use the vendored Oniguruma implementation.  Keep its own
 # test suite out of the compositor build; DiftrayWM covers its integration in
@@ -205,34 +218,6 @@ set(BUILD_TEST OFF CACHE BOOL "Build Oniguruma's upstream test suite" FORCE)
 set(INSTALL_DOCUMENTATION OFF CACHE BOOL "Install Oniguruma upstream documentation" FORCE)
 add_subdirectory("${DIFTRAY_THIRD_PARTY}/oniguruma"
                  "${CMAKE_CURRENT_BINARY_DIR}/oniguruma" EXCLUDE_FROM_ALL)
-
-# ---------------------------------------------------------------------------
-# libvterm
-# ---------------------------------------------------------------------------
-# NTerm only needs the state machine, never libvterm's curses demo UI, and
-# DEFINE_CURSES has to be set before the subproject reads it.
-set(DEFINE_CURSES OFF CACHE BOOL "Build libvterm with curses UI" FORCE)
-add_subdirectory("${DIFTRAY_THIRD_PARTY}/libvterm"
-                 "${CMAKE_CURRENT_BINARY_DIR}/libvterm" EXCLUDE_FROM_ALL)
-
-# libvterm's nc_wrapper.c includes <ncursesw/curses.h> unconditionally on Linux,
-# and that path only exists when ncurses installs it.  Point it at the real
-# header instead of requiring a particular ncurses layout.
-set(DIFTRAYWM_NCURSES_SHIM "${CMAKE_CURRENT_BINARY_DIR}/ncurses-shim")
-file(MAKE_DIRECTORY "${DIFTRAYWM_NCURSES_SHIM}/ncursesw")
-file(WRITE "${DIFTRAYWM_NCURSES_SHIM}/ncursesw/curses.h"
-     "#include <curses.h>\n")
-file(WRITE "${DIFTRAYWM_NCURSES_SHIM}/ncursesw/ncurses.h"
-     "#include <ncurses.h>\n")
-if(TARGET vterm-static)
-  target_include_directories(vterm-static PUBLIC "${DIFTRAYWM_NCURSES_SHIM}")
-endif()
-foreach(_vterm_target vterm.o vterm-shared)
-  if(TARGET ${_vterm_target})
-    target_include_directories(${_vterm_target} PRIVATE
-      "${DIFTRAYWM_NCURSES_SHIM}")
-  endif()
-endforeach()
 
 # ---------------------------------------------------------------------------
 # libtsm
@@ -346,7 +331,6 @@ function(diftraywm_target_defaults target)
       "${DIFTRAY_THIRD_PARTY}/wlroots/include"
       "${DIFTRAY_THIRD_PARTY}/libtsm/src/tsm"
       "${DIFTRAY_THIRD_PARTY}/libtsm/src/shared"
-      "${DIFTRAY_THIRD_PARTY}/libvterm"
       "${DIFTRAY_THIRD_PARTY}/libptytty/src"
       "${DIFTRAY_THIRD_PARTY}/PEGTL/include"
   )
@@ -425,19 +409,20 @@ target_link_libraries(diftraywm_compositor PUBLIC
 
 add_library(diftraywm_nterm STATIC
   src/nterm/NTerm.cpp
+  src/nterm/NTermScript.cpp
   src/nterm/GlyphRenderer.cpp
   src/nterm/GlyphAtlas.cpp
   src/nterm/NTermRenderer.cpp
   src/nterm/ShellBridge.cpp
 )
 diftraywm_target_defaults(diftraywm_nterm)
-# AGENTS.md section 6: libtsm parses VT, libvterm holds the grid, libptytty owns
-# the PTY, harfbuzz shapes, freetype rasterises, fontconfig resolves fallbacks.
+# libtsm parses and renders VT; Termlib Termscript scripts operate on cells;
+# libptytty owns PTYs, harfbuzz shapes, freetype rasterises, fontconfig resolves fallbacks.
 target_link_libraries(diftraywm_nterm PUBLIC
   diftray_libtsm
   diftray_libshell
   diftray_ptytty
-  vterm-static
+  termscript
   PkgConfig::WLROOTS_BUILD_DEPS
   PkgConfig::FREETYPE
   PkgConfig::HARFBUZZ
@@ -531,7 +516,7 @@ function(diftraywm_link_exe target)
     diftraywm_notelet
     diftray_libtsm
     diftray_ptytty
-    vterm-static
+    termscript
     wlroots::wlroots
     PkgConfig::WLROOTS_BUILD_DEPS
     PkgConfig::FREETYPE

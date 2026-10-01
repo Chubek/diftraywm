@@ -61,6 +61,15 @@ List loaded extensions.
 :script source {path.tsc}
 Run a Termscript file and show its output. diftrayctl source-script.
 .TP
+:terminal script {path.tsc}
+Run a Termscript program against the active terminal cell. Load
+"diftray.terminal" with G:load, then use screen(), cursor(), size(),
+display(text), send(text), and running(). Other Termscript standard library
+modules are available. screen() returns the visible Unicode text, cursor()
+returns zero-based "row,column", and size() returns "rows,columns".
+display(text) renders without sending to the shell; send(text) writes to its
+PTY and returns false if the cell has no running PTY.
+.TP
 :launcher lock|unlock|toggle
 Lock the launch bar to the top of the screen, release it, or flip the state.
 diftrayctl lock-launchbar, unlock-launchbar, toggle-launchbar.

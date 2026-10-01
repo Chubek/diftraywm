@@ -156,6 +156,14 @@ int main() {
     std::ofstream out(script);
     out << "G:puts \"termscript ran\";\n";
   }
+  const auto terminal_script = root / "terminal.tsc";
+  {
+    std::ofstream out(terminal_script);
+    out << "const T = G:load \"diftray.terminal\";\n"
+           "const dimensions = T:size;\n"
+           "G:puts dimensions;\n"
+           "G:puts \"cell script ran\";\n";
+  }
   const auto extension = root / "hello.lua";
   {
     std::ofstream out(extension);
@@ -219,6 +227,7 @@ int main() {
 
   // Termscript and Lua extension execution.
   expect({"source-script", script.string()}, "termscript ran");
+  expect({"bar", "terminal", "script", terminal_script.string()}, "cell script ran");
   expect({"source-script", (root / "missing.tsc").string()}, "cannot read script");
   expect({"extension-exec", extension.string()}, "loaded extension");
   expect({"extension-list"}, extension.string());

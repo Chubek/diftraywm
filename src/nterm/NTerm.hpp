@@ -10,7 +10,6 @@
 
 struct tsm_screen;
 struct tsm_vte;
-struct _vterm_s;
 
 class NTerm {
   friend struct NTermTestAccess;
@@ -41,6 +40,9 @@ public:
   tsm_screen *screen() const;
   bool consume_dirty();
   bool owns_pid(pid_t pid) const;
+  // Execute a Termscript program with access to this cell's terminal.
+  std::string run_script(const std::string &path);
+  std::string screen_text() const;
 
 private:
   static void vte_write(tsm_vte *vte, const char *u8, size_t len, void *data);
@@ -53,7 +55,6 @@ private:
   std::string shell_path_;
   tsm_screen *screen_ = nullptr;
   tsm_vte *vte_ = nullptr;
-  struct _vterm_s *vterm_ = nullptr;
   std::size_t columns_ = 80;
   std::size_t rows_ = 24;
   std::string last_error_;

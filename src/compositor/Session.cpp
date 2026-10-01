@@ -17,7 +17,7 @@
 #include "views/NCursorView.hpp"
 #include "views/GCursorView.hpp"
 
-#include <domterm.h>
+#include <termlib.h>
 #include <wayland-server-core.h>
 
 #include <cstdlib>

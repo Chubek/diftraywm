@@ -1,6 +1,6 @@
 #pragma once
 
-#include <domterm.h>
+#include <termlib.h>
 #include <termscript/termscript.h>
 
 #include <filesystem>

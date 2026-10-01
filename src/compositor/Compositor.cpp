@@ -14,7 +14,7 @@
 #include "views/TCursorView.hpp"
 #include "views/View.hpp"
 
-#include <domterm.h>
+#include <termlib.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #include <wlr/types/wlr_keyboard.h>
