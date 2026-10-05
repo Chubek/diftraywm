@@ -387,9 +387,7 @@ add_library(diftraywm_compositor STATIC
   src/compositor/ControlServer.cpp
   src/compositor/Session.cpp
   src/compositor/WaylandRuntime.c
-  src/compositor/DamageTracker.cpp
   src/compositor/Output.cpp
-  src/compositor/Protocols.cpp
   src/compositor/Logger.cpp
   src/compositor/Signals.cpp
   src/config/Config.cpp
@@ -432,7 +430,6 @@ target_link_libraries(diftraywm_nterm PUBLIC
 )
 
 add_library(diftraywm_views STATIC
-  src/views/View.cpp
   src/views/Cell.cpp
   src/views/CursorArea.cpp
   src/views/NCursorView.cpp

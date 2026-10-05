@@ -120,6 +120,7 @@ bool NTerm::spawn_shell() {
     ::fcntl(master_fd_, F_SETFL, flags | O_NONBLOCK);
   }
   running_ = true;
+  output_eof_ = false;
   dirty_ = true;
   return true;
 }
@@ -128,6 +129,9 @@ bool NTerm::start() {
   if (running_) {
     return true;
   }
+  // A reaped shell can leave its PTY open until its remaining output drains.
+  // Release that session before replacing it with a new one.
+  stop();
   return spawn_shell();
 }
 
@@ -154,6 +158,7 @@ void NTerm::stop() {
   }
   pending_input_.clear();
   running_ = false;
+  output_eof_ = true;
 }
 
 void NTerm::reap_child() {
@@ -208,10 +213,13 @@ void NTerm::on_readable() {
     return;
   }
   char buffer[4096];
-  for (;;) {
+  // Yield to input and repainting even when a child writes continuously.
+  std::size_t remaining = 64 * 1024;
+  while (remaining > 0) {
     const ssize_t count = ::read(master_fd_, buffer, sizeof(buffer));
     if (count > 0) {
       feed_parsers(std::string_view(buffer, static_cast<std::size_t>(count)));
+      remaining -= static_cast<std::size_t>(count);
       continue;
     }
     if (count < 0 && errno == EINTR) {
@@ -221,13 +229,14 @@ void NTerm::on_readable() {
       break;
     }
     running_ = false;
+    output_eof_ = true;
     break;
   }
 }
 
 void NTerm::resize(std::size_t columns, std::size_t rows) {
-  columns_ = std::max<std::size_t>(1, columns);
-  rows_ = std::max<std::size_t>(1, rows);
+  columns_ = std::clamp<std::size_t>(columns, 1, 65535);
+  rows_ = std::clamp<std::size_t>(rows, 1, 65535);
   if (screen_) {
     tsm_screen_resize(screen_, static_cast<unsigned>(columns_),
                       static_cast<unsigned>(rows_));
@@ -275,9 +284,7 @@ void NTerm::set_shell_path(std::string shell_path) {
   if (shell_path.empty()) {
     return;
   }
-  if (running_) {
-    stop();
-  }
+  stop();
   shell_path_ = std::move(shell_path);
 }
 

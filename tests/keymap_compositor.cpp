@@ -220,6 +220,14 @@ void test_check_and_reload() {
         "keymap reload failed: " + reloaded);
   c.handle_key(XKB_KEY_y, kCtrl, kPressed, 0, y_code);
   check(c.current_workspace() == 8, "the reloaded binding did not fire");
+
+  fixture.keymap("[default]\n<C-y> = Nope()\n");
+  const std::string failed = dispatch(c, "keymap reload");
+  check(failed.find("failed") != std::string::npos, "invalid reload was accepted");
+  c.switch_workspace(2);
+  c.handle_key(XKB_KEY_y, kCtrl, kPressed, 0, y_code);
+  check(c.current_workspace() == 8, "failed reload discarded the working keymap");
+  check(!c.keymap_error().empty(), "failed reload lost its diagnostic");
 }
 
 // 6. The help pager keys come from the keymap's [diftray] section.

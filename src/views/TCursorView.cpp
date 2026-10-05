@@ -18,8 +18,4 @@ TCursorView::~TCursorView() {
   }
 }
 
-void TCursorView::layout() {}
-void TCursorView::render(wlr_render_pass *) {}
-void TCursorView::focus() {}
-void TCursorView::handle_key(wlr_keyboard_key_event *) {}
 ViewType TCursorView::type() const { return ViewType::TCURSOR; }

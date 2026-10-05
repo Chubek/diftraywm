@@ -170,9 +170,22 @@ and [examples](examples) for YAML/TOML configurations. Its
 shipped `themes/default.css` defines `border-size`, `command-bar-height`,
 `status-bar-height`, `border-color`, `background-color`, and
 `command-bar-color` under `:root`. Colors use `#RRGGBB` or `#RRGGBBAA`;
-dimensions use positive pixel values. Run `theme load <path>` in the command
-bar to apply a file without restarting. Other CSS properties and animations
-are not currently rendered by the compositor.
+dimensions use nonnegative pixel values (or `0`). The shorthand colors `#RGB`
+and `#RGBA` also work. Run `theme load <path>` in the command bar to apply a file
+without restarting. CSS comments and root custom properties such as
+`--accent: #59a6ff; border-color: var(--accent);` are supported.
+
+Terminal styling uses `terminal-background-color`, `terminal-foreground-color`,
+`terminal-cursor-color`, `terminal-cursor-thickness`, and `highlight-color`.
+Themes affect default terminal colors while programs keep their explicit ANSI
+colors. The light theme supplies a dark foreground for readability.
+
+Opening cells use CSS opacity keyframes. The shipped themes specify
+`animation: cell-appear 140ms ease-out;` and matching `@keyframes`; set
+`animation: none;` to disable them. Longhand name, duration, delay, timing-function
+and fill-mode settings are also supported. Timing functions include `linear`,
+`ease`, `ease-in`, `ease-out` and `ease-in-out`. Transforms, transitions, repeated
+animations, radii and shadows are not yet rendered.
 
 ## Notelets
 

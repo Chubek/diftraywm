@@ -12,10 +12,6 @@ public:
   ~TCursorView() override;
 
   Cell *cell() const { return cell_; }
-  void layout() override;
-  void render(wlr_render_pass *pass) override;
-  void focus() override;
-  void handle_key(wlr_keyboard_key_event *event) override;
   ViewType type() const override;
 
 private:

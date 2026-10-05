@@ -25,20 +25,21 @@ void NCursorView::layout() {
                                 : std::max(1, output_box_.height /
                                                   static_cast<int>(stack.cells.size()));
     int cell_y = output_box_.y;
-    for (auto *cell : stack.cells) {
+    for (std::size_t index = 0; index < stack.cells.size(); ++index) {
+      auto *cell = stack.cells[index];
       if (!cell) {
         continue;
       }
-      wlr_box box{x, cell_y, width, cell_height};
+      const int height = index + 1 == stack.cells.size()
+                             ? std::max(1, output_box_.y + output_box_.height - cell_y)
+                             : cell_height;
+      wlr_box box{x, cell_y, width, height};
       cell->set_box(box);
       cell_y += cell_height;
     }
   }
 }
 
-void NCursorView::render(wlr_render_pass *) {}
-void NCursorView::focus() {}
-void NCursorView::handle_key(wlr_keyboard_key_event *) {}
 ViewType NCursorView::type() const { return ViewType::NCURSOR; }
 std::vector<NCursorView::CellStack> &NCursorView::cell_stacks() { return cell_stacks_; }
 const std::vector<NCursorView::CellStack> &NCursorView::cell_stacks() const { return cell_stacks_; }
@@ -76,6 +77,8 @@ bool NCursorView::insert_cell(Cell *cell, bool above) {
   if (!cell) {
     return false;
   }
+  for (const auto &stack : cell_stacks_)
+    if (std::find(stack.cells.begin(), stack.cells.end(), cell) != stack.cells.end()) return false;
   ensure_stack();
   auto &stack = cell_stacks_[selected_stack_index_];
   const std::size_t index = stack.cells.empty() ? 0 : std::min(stack.active_index, stack.cells.size() - 1);
@@ -107,7 +110,6 @@ bool NCursorView::remove_cell(Cell *cell) {
     } else if (index <= stack.active_index && stack.active_index > 0) {
       --stack.active_index;
     }
-    selected_cell_index_ = static_cast<int>(stack.active_index);
     // Dropping the emptied split keeps focus on a live pane. The final stack
     // is kept even when empty so the view stays usable.
     if (stack.cells.empty() && cell_stacks_.size() > 1) {
@@ -120,10 +122,9 @@ bool NCursorView::remove_cell(Cell *cell) {
       const auto &current = cell_stacks_[selected_stack_index_];
       selected_cell_index_ =
           current.cells.empty() ? 0 : static_cast<int>(current.active_index);
-    } else if (selected_stack_index_ < cell_stacks_.size() &&
-               stack_index == selected_stack_index_) {
-      selected_cell_index_ = static_cast<int>(stack.active_index);
     }
+    const auto &selected = cell_stacks_[selected_stack_index_];
+    selected_cell_index_ = static_cast<int>(selected.active_index);
     return true;
   }
   return false;
@@ -198,6 +199,8 @@ bool NCursorView::split_stack(Cell *cell) {
   if (!cell) {
     return false;
   }
+  for (const auto &stack : cell_stacks_)
+    if (std::find(stack.cells.begin(), stack.cells.end(), cell) != stack.cells.end()) return false;
   ensure_stack();
   cell_stacks_.push_back(CellStack{{cell}, 0});
   selected_stack_index_ = cell_stacks_.size() - 1;

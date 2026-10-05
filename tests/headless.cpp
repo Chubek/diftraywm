@@ -12,6 +12,25 @@
 #include <fstream>
 
 struct CompositorTestAccess {
+  static bool animation_started(Compositor &c) {
+    // Restart after backend initialization, which can outlast a short opening
+    // animation on a busy machine. Sample deterministically on real scene nodes.
+    c.reset_cell_animations();
+    c.animate_cell(c.active_cell());
+    if (!c.animations_.active()) return false;
+    c.animations_.tick(0.05);
+    for (const auto &cell : c.cells_) {
+      const float opacity = diftray_cell_surface_opacity(cell->surface());
+      if (opacity > 0 && opacity < 1) return true;
+    }
+    return false;
+  }
+  static bool animation_finished(Compositor &c) {
+    if (c.animations_.active()) return false;
+    for (const auto &cell : c.cells_)
+      if (diftray_cell_surface_opacity(cell->surface()) != 1) return false;
+    return true;
+  }
   static bool check(Compositor &c) {
     if (c.outputs_.size() != 3) return false;
     for (auto &[name, output] : c.outputs_) {
@@ -86,7 +105,7 @@ static int inspect(void *userdata) {
     if (!run->rotated_notelet) {
       run->compositor->command_bar().dispatch("output rotate HEADLESS-2 180");
       run->rotated_notelet = true;
-    } else {
+    } else if (CompositorTestAccess::animation_finished(*run->compositor)) {
       run->passed = CompositorTestAccess::notelet_updated(*run->compositor);
       run->compositor->stop(); return 0;
     }
@@ -104,14 +123,16 @@ int main() {
   setenv("WLR_RENDERER", "pixman", 1);
   unsetenv("DIFTRAYWM_LOGIC_ONLY");
   const auto config = std::filesystem::path(directory) / "diftray.toml";
-  std::ofstream(config) << "[[monitors]]\nname = '*'\nrotation = 180\n"
+  const auto theme = std::filesystem::path(__FILE__).parent_path().parent_path() / "themes/default.css";
+  std::ofstream(config) << "[general]\ntheme = '" << theme.string() << "'\n"
+    "[[monitors]]\nname = '*'\nrotation = 180\n"
     "[[monitors]]\nname = 'HEADLESS-1'\nrotation = 90\nx = -720\ny = 0\n"
     "[[monitors]]\nname = 'HEADLESS-2'\nscale = 2.0\nx = 0\ny = 0\n";
   setenv("DIFTRAYWM_CONFIG", config.c_str(), 1);
   bool passed = false;
   {
     Compositor c;
-    if (c.init()) {
+    if (c.init() && CompositorTestAccess::animation_started(c)) {
       Run run{&c, nullptr};
       run.timer = wl_event_loop_add_timer(wl_display_get_event_loop(c.display()), inspect, &run);
       wl_event_source_timer_update(run.timer, 20);

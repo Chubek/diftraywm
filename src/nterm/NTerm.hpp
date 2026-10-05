@@ -21,6 +21,7 @@ public:
   void stop();
   void reap_child();
   bool running() const;
+  bool output_open() const { return master_fd_ >= 0 && !output_eof_; }
   const std::string &last_error() const;
   void on_readable();
   void resize(std::size_t columns, std::size_t rows);
@@ -60,5 +61,6 @@ private:
   std::string last_error_;
   std::string pending_input_;
   bool running_ = false;
+  bool output_eof_ = false;
   bool dirty_ = true;
 };

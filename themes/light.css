@@ -7,4 +7,14 @@
   background-color: #e8eaf0;
   command-bar-color: #d4d9e6fa;
   launcher-bar-color: #c8d0e2fa;
+  terminal-foreground-color: #182033;
+  terminal-cursor-color: #2456a6;
+  terminal-cursor-thickness: 2px;
+  highlight-color: #a05d00;
+  animation: cell-appear 140ms ease-out;
+}
+
+@keyframes cell-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

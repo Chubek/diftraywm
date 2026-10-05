@@ -92,10 +92,12 @@ GCursorView::GCursorView(Compositor *compositor, std::string word_id)
     : word_id_(pick_word(std::move(word_id))), compositor_(compositor) {}
 
 GCursorView::~GCursorView() { release_word(word_id_); }
-void GCursorView::layout() {}
-void GCursorView::render(wlr_render_pass *) {}
-void GCursorView::focus() {}
-void GCursorView::handle_key(wlr_keyboard_key_event *) {}
+void GCursorView::reload_word_pool() {
+  auto words = load_words();
+  auto &word_pool = pool();
+  std::lock_guard<std::mutex> lock(word_pool.mutex);
+  word_pool.words = std::move(words);
+}
 ViewType GCursorView::type() const { return ViewType::GCURSOR; }
 const std::string &GCursorView::word_id() const { return word_id_; }
 bool GCursorView::docked() const { return docked_; }

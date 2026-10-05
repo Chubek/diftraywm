@@ -19,10 +19,7 @@ public:
   NCursorView();
   ~NCursorView() override;
 
-  void layout() override;
-  void render(wlr_render_pass *pass) override;
-  void focus() override;
-  void handle_key(wlr_keyboard_key_event *event) override;
+  void layout();
   ViewType type() const override;
 
   std::vector<CellStack> &cell_stacks();

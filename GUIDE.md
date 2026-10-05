@@ -90,6 +90,28 @@ inline CSS. The properties `border-color`, `background-color`,
 dark default and `themes/light.css` is a light example. `help` opens the
 manual pager; `help commands` lists commands.
 
+Terminal defaults can be styled with `terminal-background-color`,
+`terminal-foreground-color`, `terminal-cursor-color`,
+`terminal-cursor-thickness`, and `highlight-color`. Colors may include alpha.
+CSS comments, root custom properties and `var(--name, fallback)` work; invalid
+themes and configuration reloads retain the previous working appearance.
+
+The shipped themes animate opening terminal cells with opacity keyframes:
+
+```css
+:root { animation: cell-appear 140ms ease-out; }
+@keyframes cell-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+```
+
+Use `animation: none;` to disable this. Keyframes can include intermediate
+percentages, and duration, delay, timing-function and fill-mode longhands are
+available. Supported timing functions are `linear`, `ease`, `ease-in`,
+`ease-out` and `ease-in-out`. Other CSS animation types remain unsupported;
+see [IMPLEMENTATION.md](IMPLEMENTATION.md) for the current limits.
+
 ## Key remapping
 
 All key configuration lives in one INI file, in the format `keyd` uses. The

@@ -1,65 +1,88 @@
 # Implementation status
 
-Implemented and exercised in this change:
+DiftrayWM runs with real wlroots headless outputs and has 23 CTest targets. The
+complete AGENTS.md specification is still in progress; passing tests does not
+establish that every desktop application or physical GPU backend works.
 
-- Per-output logical geometry, separate visible NCursor/GCursor views, per-output
-  tab focus, keyboard monitor focus, output movement and unplug migration.
-  Workspace selection is shared across outputs. Per-monitor rotation, fractional
-  scaling and explicit/automatic placement are configured in YAML, TOML or the
-  DSL, with live Command Bar updates and retained overrides on reconnection.
-  Notelets automatically refresh their monitor snapshots on output changes.
-- Command-based NCursor listing/creation and cell/GCursor ownership transfer.
-  Cursor-area references are removed when clients disappear, and graphical
-  clients can outlive their launching cell.
-- DomTERM Notelet workers, queued events, execution deadlines, transactional
-  state/frame updates, Unicode input, context snapshots and refresh/move/resize
-  events. Bundled scratchpad and desktop-inspector applications.
-- Vendored builds for the available mandatory libraries, private installed
-  runtime libraries, shaped compositor chrome, and terminal font fallback.
-- PTY backpressure handling, child reaping, shutdown signals, bounded shell
-  termination, cell-removal confirmation and inherited shell scoping.
-- YAML/libcyaml and TOML/tomlc99 configuration, transactional validation,
-  deterministic discovery, and retained PEGTL DSL support.
-- Embedded LibShell with its supplied parser, expansions, builtins, pipelines
-  and POSIX executor, adapted to retain NTerm's controlling terminal.
-- Lua/Kaguya scripts with owned command registrations, bounded execution,
-  deferred commands and input/view/frame hooks; native dynalo plugins with
-  scoped commands, event subscriptions and failed-initialization rollback.
+Implemented behavior includes per-output geometry, navigation, ownership
+migration, workspace switching, hot-unplug recovery, Notelet workers, PTY shells,
+configuration programs, native plugins, Lua extensions, and the diftrayctl control
+socket. YAML, TOML and PEGTL configuration formats remain supported. The vendored
+dependency chain supplies the compositor and terminal libraries.
 
-Validation: twelve CTest targets cover existing behavior, multiple-output
-navigation/movement, three actual wlroots headless outputs with startup/live rotation, fractional
-scaling, placement, focus preservation and Notelet output events, asynchronous Notelet
-rendering/cancellation, Unicode editing, terminal display and input backpressure,
-configuration formats, extension lifecycle/failure handling, and real PTY shell commands and interruption.
-Physical monitors, GPU backends and interactive input were not verified in this
-session. `wm_dev_mcp` reported no available X11/Sway backend.
+## Responsiveness and rendering fixes
 
-The full AGENTS.md specification is **not complete**. Known remaining work:
+- Control requests and responses use nonblocking event-loop callbacks. Reads,
+  writes and accepts have bounded batches; silent readers and writers expire.
+  A second session cannot unlink a live control socket, and failed startup
+  preserves unrelated files. Socket shutdown only removes the owned inode.
+- PTY reads yield after 64 KiB. Reaping a shell does not close its output watcher
+  before buffered output drains. Restarting a terminal releases its previous
+  PTY, and hidden terminals avoid unnecessary rasterisation on output events.
+- Fonts reload transactionally and invalidate old glyphs. HarfBuzz shapes
+  compatible terminal runs, including ligatures and combining sequences, before
+  FreeType rasterisation. Synthetic bold and italic, underline, reverse video,
+  hidden cursors, wide-character continuation cells, and Unicode fallback for
+  compositor chrome are handled. Raster-cache memory is bounded.
+- Terminal backgrounds, foregrounds, cursor color/thickness and cell highlights
+  are theme properties. Alpha is premultiplied for scene rectangles and pixel
+  buffers. Application-specified ANSI colors retain their own values.
+- CSS comments, custom properties and variable fallbacks work. Invalid syntax,
+  metrics, variable cycles and oversized themes fail without changing the live
+  theme. Configuration reload stages the theme and font before committing.
+  Failed keymap reloads retain the previous bindings and profile.
+- Opening cells animate through actual scene opacity, including their borders.
+  CSS opacity keyframes, named timing functions, delays and fill modes are
+  supported. Reloading or disabling animations resets opacity, and closing cells
+  removes their animation callbacks. The default and light themes enable a
+  short opening animation.
+- Layout rounding assigns leftover pixels to the last cell/view. Duplicate cell
+  insertion is rejected. Removing a cell from another stack preserves the
+  selected stack's index.
+- Unused view rendering/input hooks and placeholder protocol/damage functions
+  were removed. Compositor input/focus dispatch and the wlroots scene remain the
+  active implementations.
+- Launcher processes inherit their originating NCursor identity. Delayed and
+  additional windows retain that owner after workspace changes; background
+  windows do not switch workspaces or outputs. Map-time keyboard focus follows
+  per-surface visibility and the compositor's selected window, and switching
+  away clears the client's activated state. Reloading the word pool updates new
+  identifiers while preserving live identifiers and uniqueness.
 
-- LibShell now runs commands inside the PTY session, but full interactive job
-  control and advanced line editing are not implemented. External shell
-  overrides remain available. The supplied Lua is 5.5 rather than the 5.4 named
-  in AGENTS.md; a local adapter provides Kaguya compatibility.
-- The terminal still feeds both libtsm and libvterm, and the renderer reads the
-  libtsm grid. A decoded-event adapter is required to establish the exact
-  libtsm-parser/libvterm-buffer contract without duplicate parsing.
-- Terminal text is shaped per glyph; run-level terminal ligatures and complex
-  script layout remain incomplete. Chrome is shaped as a full text run.
-- CSS keyframes, transitions, radii and shadows are not rendered. Several
-  terminal styling constants still need conversion to theme properties.
-- Docking hides clients but does not yet suspend their process trees. Launcher
-  ancestry tracking and grouping additional graphical surfaces need expansion.
-- The external output-management protocol and independent workspace selection
-  per monitor are not implemented. Configuration and Command Bar output controls
-  are available.
+## Validation
 
-This file records outstanding functionality; it is not a completion claim.
+The suite covers three real headless outputs, output rotation/scale/placement,
+scene animation start/completion, focus and ownership migration, Notelet worker
+cancellation, configuration and extension lifecycle, real shell PTYs, terminal
+input/output backpressure, and diftrayctl commands against a running compositor.
+New regressions exercise large partial control replies, stalled clients, socket
+ownership, font reloads, text attributes, transparency, CSS variables/keyframes,
+transactional theme/config reloads and retained keymaps.
 
+Physical monitors, GPU rendering, real keyboard devices and subjective animation
+smoothness require interactive testing on the intended hardware.
 
-Configuration programs now provide immutable typed variables, distinct physical
-keycodes and layout keysyms, eager functions, lazy expression macros, and scoped
-bindings in all three formats. Setting expressions also cover monitor rotation.
-The Command Bar exposes config vars/eval/run. Parser, evaluator, and command
-recursion limits are enforced; examples and semantics are in CONFIGURATION.md.
-The 13-test suite includes config evaluation, format equivalence, physical-key
-precedence, scope restoration, Notelet macros, and headless multi-output tests.
+## Remaining specification gaps
+
+- LibShell's complete interactive job control and advanced line editing remain
+  incomplete; external shell overrides are available.
+- NTerm currently uses libtsm for parsing and its rendered grid. The specified
+  libtsm decoded-event adapter into a libvterm-owned buffer is not implemented.
+- Run shaping does not implement a complete bidirectional layout engine or a
+  fallback chain that splits a mixed-font run. Color emoji and terminal blink
+  animations also need further work.
+- CSS rendering currently supports root properties and opacity animations for
+  opening terminal cells. Arbitrary selector styling, transforms, transitions,
+  repeated/reversed animations, radii and shadows remain unsupported. Animation
+  durations/delays are bounded to 60 seconds; unsupported animation options
+  report an error. Graphical-window opening/docking animations are not connected.
+- Docking hides graphical clients but does not suspend their process trees.
+  Grouping multiple graphical surfaces and ownership for applications that
+  delegate window creation to an existing service still need expansion.
+- The external output-management protocol is not implemented. Configuration and
+  Command Bar controls manage outputs; workspace switching is global.
+- The supplied Lua runtime is 5.5 rather than the 5.4 named in AGENTS.md; Kaguya
+  uses a local compatibility adapter.
+
+This list records remaining work, not a claim that all undiscovered bugs have
+been eliminated.

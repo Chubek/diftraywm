@@ -9,9 +9,11 @@
 #include "help/HelpPager.hpp"
 #include "keymap/Keymap.hpp"
 #include "nterm/NTermRenderer.hpp"
+#include "theme/AnimationPipeline.hpp"
 #include "compositor/WaylandRuntime.h"
 
 #include <memory>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -36,6 +38,7 @@ class TCursorView;
 struct Output;
 struct Input;
 class ThemeEngine;
+struct ThemeProperties;
 class PluginManager;
 class LuaEngine;
 class NoteletCatalog;
@@ -142,6 +145,8 @@ public:
   const std::string &status_line() const { return status_line_; }
 
 private:
+  std::string prepare_theme(const std::string &css, CompositorConfig &next,
+                            ThemeProperties &parsed, NTermRenderer::Style &style);
   void layout_current_output();
   bool install_signals();
   static int shutdown_signal(int signal, void *userdata);
@@ -156,6 +161,12 @@ private:
   GCursorView *find_gcursor(wlr_xdg_toplevel *toplevel) const;
   void attach_cell_surface(Cell *cell);
   void detach_cell_surface(Cell *cell);
+  void animate_cell(Cell *cell);
+  void reset_cell_animations();
+  static int animations_ready(void *userdata);
+  AnimationPipeline animations_;
+  wl_event_source *animation_timer_ = nullptr;
+  std::chrono::steady_clock::time_point animation_tick_;
   void render_cell(Cell *cell, bool selected);
   void paint_notelet(Cell *cell);
   void request_notelet(Cell *cell, const std::string &key, const std::string &event);

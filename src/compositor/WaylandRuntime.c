@@ -132,6 +132,7 @@ struct diftray_toplevel {
   struct wl_listener request_maximize;
   struct wl_listener request_fullscreen;
   bool mapped;
+  bool wants_focus;
   int x, y, width, height;
 };
 
@@ -152,7 +153,33 @@ struct diftray_cell_surface {
   int y;
   int width;
   int height;
+  float opacity;
 };
+
+// Theme colors are straight RGBA; wlroots scene rectangles require
+// premultiplied values. Keep the original style for text rasterisation.
+static struct wlr_scene_rect *create_style_rect(struct wlr_scene_tree *parent,
+    int width, int height, const float color[4]) {
+  const float premultiplied[4] = {color[0] * color[3], color[1] * color[3],
+                                color[2] * color[3], color[3]};
+  return wlr_scene_rect_create(parent, width, height, premultiplied);
+}
+
+static void set_style_rect_color(struct wlr_scene_rect *rect, const float color[4]) {
+  const float premultiplied[4] = {color[0] * color[3], color[1] * color[3],
+                                color[2] * color[3], color[3]};
+  wlr_scene_rect_set_color(rect, premultiplied);
+}
+
+static void update_cell_colors(struct diftray_cell_surface *surface) {
+  float border[4], highlight[4];
+  memcpy(border, surface->runtime->style.border_color, sizeof(border));
+  memcpy(highlight, surface->runtime->style.highlight_color, sizeof(highlight));
+  border[3] *= surface->opacity;
+  highlight[3] *= surface->opacity;
+  set_style_rect_color(surface->border, border);
+  set_style_rect_color(surface->highlight, highlight);
+}
 
 static void pixel_buffer_destroy(struct wlr_buffer *wlr_buffer) {
   struct diftray_pixel_buffer *buffer =
@@ -237,12 +264,18 @@ static void layout_gcursor(struct diftray_wayland_runtime *runtime,
 }
 
 static void focus_toplevel(struct diftray_toplevel *toplevel) {
-  if (!toplevel || !toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base) {
+  if (!toplevel || !toplevel->mapped || !toplevel->tree->node.enabled ||
+      !toplevel->xdg_toplevel || !toplevel->xdg_toplevel->base) {
     return;
   }
   struct wlr_seat *seat = toplevel->runtime->seat;
   struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
   struct wlr_keyboard *keyboard = wlr_seat_get_keyboard(seat);
+  struct diftray_toplevel *other;
+  wl_list_for_each(other, &toplevel->runtime->toplevels, link) {
+    if (other != toplevel && other->mapped)
+      wlr_xdg_toplevel_set_activated(other->xdg_toplevel, false);
+  }
   wlr_scene_node_raise_to_top(&toplevel->tree->node);
   wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
   if (keyboard) {
@@ -392,8 +425,7 @@ static void toplevel_map(struct wl_listener *listener, void *data) {
   (void)data;
   toplevel->mapped = true;
   layout_gcursor(toplevel->runtime, toplevel);
-  if (toplevel->runtime->gcursor_visible) {
-    wlr_scene_node_set_enabled(&toplevel->tree->node, true);
+  if (toplevel->tree->node.enabled && toplevel->wants_focus) {
     focus_toplevel(toplevel);
   }
 }
@@ -903,16 +935,16 @@ struct diftray_wayland_runtime *diftray_wayland_runtime_create(
   runtime->scene = wlr_scene_create();
   runtime->scene_layout =
       wlr_scene_attach_output_layout(runtime->scene, runtime->output_layout);
-  runtime->background = wlr_scene_rect_create(
+  runtime->background = create_style_rect(
       &runtime->scene->tree, 1920, 1080, runtime->style.background_color);
   runtime->ncursor_tree = wlr_scene_tree_create(&runtime->scene->tree);
   runtime->gcursor_tree = wlr_scene_tree_create(&runtime->scene->tree);
   runtime->overlay_tree = wlr_scene_tree_create(&runtime->scene->tree);
-  runtime->command_bar = wlr_scene_rect_create(
+  runtime->command_bar = create_style_rect(
       runtime->overlay_tree, 1920, runtime->style.command_bar_height,
       runtime->style.command_bar_color);
   wlr_scene_node_set_enabled(&runtime->command_bar->node, false);
-  runtime->launcher_bar = wlr_scene_rect_create(
+  runtime->launcher_bar = create_style_rect(
       runtime->overlay_tree, 1920,
       runtime->style.launcher_bar_height > 0 ? runtime->style.launcher_bar_height
                                              : 32,
@@ -1076,10 +1108,11 @@ struct diftray_cell_surface *diftray_cell_surface_create(
   }
   struct diftray_cell_surface *surface = calloc(1, sizeof(*surface));
   surface->runtime = runtime;
+  surface->opacity = 1.0f;
   surface->tree = wlr_scene_tree_create(runtime->ncursor_tree);
-  surface->border = wlr_scene_rect_create(surface->tree, 1, 1,
+  surface->border = create_style_rect(surface->tree, 1, 1,
                                           runtime->style.border_color);
-  surface->highlight = wlr_scene_rect_create(surface->tree, 1, 1,
+  surface->highlight = create_style_rect(surface->tree, 1, 1,
                                              runtime->style.highlight_color);
   wlr_scene_node_set_enabled(&surface->highlight->node, false);
   surface->buffer_node = wlr_scene_buffer_create(surface->tree, NULL);
@@ -1109,8 +1142,7 @@ void diftray_cell_surface_place(struct diftray_cell_surface *surface, int x,
   surface->width = width;
   surface->height = height;
   const int border = surface->runtime->style.border_size;
-  wlr_scene_rect_set_color(surface->border, surface->runtime->style.border_color);
-  wlr_scene_rect_set_color(surface->highlight, surface->runtime->style.highlight_color);
+  update_cell_colors(surface);
   wlr_scene_node_set_position(&surface->tree->node, x, y);
   wlr_scene_rect_set_size(surface->border, width, height);
   wlr_scene_rect_set_size(surface->highlight, width, height);
@@ -1147,6 +1179,22 @@ void diftray_cell_surface_set_highlight(struct diftray_cell_surface *surface,
   wlr_scene_node_set_enabled(&surface->highlight->node, highlighted);
 }
 
+void diftray_cell_surface_set_opacity(struct diftray_cell_surface *surface, float opacity) {
+  if (surface && surface->buffer_node) {
+    surface->opacity = opacity;
+    update_cell_colors(surface);
+    wlr_scene_buffer_set_opacity(surface->buffer_node, opacity);
+  }
+}
+
+bool diftray_cell_surface_visible(struct diftray_cell_surface *surface) {
+  return surface && surface->tree && surface->tree->node.enabled;
+}
+
+float diftray_cell_surface_opacity(struct diftray_cell_surface *surface) {
+  return surface && surface->buffer_node ? surface->buffer_node->opacity : 1.0f;
+}
+
 void diftray_cell_surface_set_visible(struct diftray_cell_surface *surface,
                                       bool visible) {
   if (!surface) {
@@ -1162,9 +1210,7 @@ void diftray_wayland_runtime_attach_gcursor(
   if (!found) {
     return;
   }
-  wlr_scene_node_set_enabled(&found->tree->node, true);
   layout_gcursor(runtime, found);
-  focus_toplevel(found);
 }
 
 void diftray_wayland_runtime_set_gcursor_visible_surface(
@@ -1175,6 +1221,7 @@ void diftray_wayland_runtime_set_gcursor_visible_surface(
     return;
   }
   wlr_scene_node_set_enabled(&found->tree->node, visible);
+  if (!visible) found->wants_focus = false;
 }
 
 void diftray_wayland_runtime_focus_gcursor(
@@ -1184,6 +1231,8 @@ void diftray_wayland_runtime_focus_gcursor(
   if (!found) {
     return;
   }
+  struct diftray_toplevel *other;
+  wl_list_for_each(other, &runtime->toplevels, link) other->wants_focus = other == found;
   layout_gcursor(runtime, found);
   focus_toplevel(found);
 }
@@ -1203,6 +1252,11 @@ void diftray_wayland_runtime_layout_gcursor(
 void diftray_wayland_runtime_clear_keyboard_focus(
     struct diftray_wayland_runtime *runtime) {
   if (runtime) {
+    struct diftray_toplevel *top;
+    wl_list_for_each(top, &runtime->toplevels, link) {
+      top->wants_focus = false;
+      if (top->mapped) wlr_xdg_toplevel_set_activated(top->xdg_toplevel, false);
+    }
     wlr_seat_keyboard_clear_focus(runtime->seat);
   }
 }
@@ -1213,10 +1267,10 @@ void diftray_wayland_runtime_set_style(struct diftray_wayland_runtime *runtime,
     return;
   }
   runtime->style = *style;
-  wlr_scene_rect_set_color(runtime->background, style->background_color);
-  wlr_scene_rect_set_color(runtime->command_bar, style->command_bar_color);
+  set_style_rect_color(runtime->background, style->background_color);
+  set_style_rect_color(runtime->command_bar, style->command_bar_color);
   if (runtime->launcher_bar) {
-    wlr_scene_rect_set_color(runtime->launcher_bar, style->launcher_bar_color);
+    set_style_rect_color(runtime->launcher_bar, style->launcher_bar_color);
   }
   layout_overlay(runtime);
   refresh_command_bar(runtime);

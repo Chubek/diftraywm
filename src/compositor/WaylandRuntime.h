@@ -115,6 +115,10 @@ void diftray_cell_surface_set_highlight(struct diftray_cell_surface *surface,
                                         bool highlighted);
 void diftray_cell_surface_set_visible(struct diftray_cell_surface *surface,
                                       bool visible);
+void diftray_cell_surface_set_opacity(struct diftray_cell_surface *surface,
+                                      float opacity);
+bool diftray_cell_surface_visible(struct diftray_cell_surface *surface);
+float diftray_cell_surface_opacity(struct diftray_cell_surface *surface);
 
 void diftray_wayland_runtime_attach_gcursor(
     struct diftray_wayland_runtime *runtime,

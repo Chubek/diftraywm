@@ -14,11 +14,8 @@ class GCursorView : public View {
 public:
   explicit GCursorView(Compositor *compositor = nullptr, std::string word_id = {});
   ~GCursorView() override;
+  static void reload_word_pool();
 
-  void layout() override;
-  void render(wlr_render_pass *pass) override;
-  void focus() override;
-  void handle_key(wlr_keyboard_key_event *event) override;
   ViewType type() const override;
 
   const std::string &word_id() const;

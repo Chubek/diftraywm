@@ -12,10 +12,18 @@ int main() {
     std::cerr << "insert failed\n";
     return EXIT_FAILURE;
   }
-  view.set_output_box({0, 0, 800, 600});
+  if (view.insert_cell(&first, false) || view.split_stack(&first)) {
+    std::cerr << "duplicate cell was accepted\n";
+    return EXIT_FAILURE;
+  }
+  view.set_output_box({0, 0, 800, 601});
   view.layout();
   if (first.box().height <= 0 || second.box().height <= 0) {
     std::cerr << "layout failed\n";
+    return EXIT_FAILURE;
+  }
+  if (second.box().y + second.box().height != 601) {
+    std::cerr << "layout lost its bottom pixel\n";
     return EXIT_FAILURE;
   }
   if (!view.move_selected_cell(-1)) {

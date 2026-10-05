@@ -38,23 +38,27 @@ Compositor::Compositor() : keyboard_handler_(this) {}
 
 namespace {
 bool theme_color(const std::string &value, float out[4]) {
-  if (value.size() != 7 && value.size() != 9) return false;
+  if (value.size() != 4 && value.size() != 5 && value.size() != 7 && value.size() != 9) return false;
   if (value[0] != '#') return false;
+  const bool shorthand = value.size() <= 5;
+  const int digits = shorthand ? 1 : 2;
   for (int i = 0; i < 4; ++i) {
-    if (i == 3 && value.size() == 7) { out[i] = 1.0f; break; }
+    if (i == 3 && (value.size() == 7 || value.size() == 4)) { out[i] = 1.0f; break; }
     unsigned int channel = 0;
-    auto part = value.data() + 1 + i * 2;
-    auto result = std::from_chars(part, part + 2, channel, 16);
-    if (result.ec != std::errc() || result.ptr != part + 2) return false;
+    auto part = value.data() + 1 + i * digits;
+    auto result = std::from_chars(part, part + digits, channel, 16);
+    if (result.ec != std::errc() || result.ptr != part + digits) return false;
+    if (shorthand) channel *= 17;
     out[i] = static_cast<float>(channel) / 255.0f;
   }
   return true;
 }
 
 bool theme_pixels(const std::string &value, int &out) {
+  if (value == "0") { out = 0; return true; }
   if (value.size() < 3 || value.substr(value.size() - 2) != "px") return false;
   auto result = std::from_chars(value.data(), value.data() + value.size() - 2, out);
-  return result.ec == std::errc() && result.ptr == value.data() + value.size() - 2 && out > 0;
+  return result.ec == std::errc() && result.ptr == value.data() + value.size() - 2 && out >= 0 && out <= 4096;
 }
 
 // Modifier bits that participate in binding matches; Caps Lock and Num Lock
@@ -207,6 +211,7 @@ bool Compositor::init() {
   if (!config_.word_pool.empty()) {
     setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 0);
   }
+  GCursorView::reload_word_pool();
   // The launcher starts locked exactly when the configuration asks for it.
   launcher_locked_ = config_.launcher_locked;
 
@@ -223,6 +228,7 @@ bool Compositor::init() {
                                     output_height_ - config_.status_bar_height});
 
   theme_engine_ = new ThemeEngine();
+  if (config_.theme.empty()) apply_theme_css(":root {}");
   if (!config_.theme.empty()) {
     const auto result = load_theme_file(config_.theme);
     if (result != "theme applied") {
@@ -364,6 +370,11 @@ void Compositor::stop() {
   // Connections are served on the same event loop that is about to stop, so
   // drop them before the display tears down the loop's sources.
   if (control_server_) control_server_->stop();
+  animations_.clear();
+  if (animation_timer_) {
+    wl_event_source_remove(animation_timer_);
+    animation_timer_ = nullptr;
+  }
   for (auto &entry : pty_sources_) {
     if (entry.second) {
       wl_event_source_remove(entry.second);
@@ -386,15 +397,49 @@ void Compositor::attach_cell_surface(Cell *cell) {
     return;
   }
   cell->set_surface(diftray_cell_surface_create(wayland_runtime_));
+  animate_cell(cell);
 }
 
 void Compositor::detach_cell_surface(Cell *cell) {
   if (!cell || !cell->surface()) {
     return;
   }
+  animations_.cancel(cell);
   unwatch_cell_pty(cell);
   diftray_cell_surface_destroy(cell->surface());
   cell->set_surface(nullptr);
+}
+
+void Compositor::animate_cell(Cell *cell) {
+  if (!cell || !cell->surface() || !theme_engine_ || !display_) return;
+  const auto &spec = theme_engine_->active().cell_animation;
+  if (spec.duration <= 0 || spec.frames.empty()) return;
+  if (!animation_timer_) {
+    animation_timer_ = wl_event_loop_add_timer(wl_display_get_event_loop(display_.get()),
+                                               &Compositor::animations_ready, this);
+    if (!animation_timer_) return;
+  }
+  if (!animations_.active()) animation_tick_ = std::chrono::steady_clock::now();
+  animations_.start(cell, spec, [cell](double opacity) {
+    diftray_cell_surface_set_opacity(cell->surface(), static_cast<float>(opacity));
+  });
+  wl_event_source_timer_update(animation_timer_, 16);
+}
+
+void Compositor::reset_cell_animations() {
+  animations_.clear();
+  // Completed forwards-filled timelines have already left the queue.
+  for (auto &cell : cells_) diftray_cell_surface_set_opacity(cell->surface(), 1.0f);
+  if (animation_timer_) wl_event_source_timer_update(animation_timer_, 0);
+}
+
+int Compositor::animations_ready(void *userdata) {
+  auto *self = static_cast<Compositor *>(userdata);
+  const auto now = std::chrono::steady_clock::now();
+  self->animations_.tick(std::chrono::duration<double>(now - self->animation_tick_).count());
+  self->animation_tick_ = now;
+  if (self->animations_.active()) wl_event_source_timer_update(self->animation_timer_, 16);
+  return 0;
 }
 
 void Compositor::watch_cell_pty(Cell *cell) {
@@ -685,8 +730,11 @@ void Compositor::layout_current_output() {
     const int band =
         std::max(1, usable_height / static_cast<int>(workspace_views.size()));
     int y = output_y_ + config_.status_bar_height;
-    for (auto *view : workspace_views) {
-      view->set_output_box({output_x_, y, output_width_, band});
+    for (std::size_t index = 0; index < workspace_views.size(); ++index) {
+      auto *view = workspace_views[index];
+      const int height = index + 1 == workspace_views.size()
+                             ? std::max(1, output_y_ + output_height_ - y) : band;
+      view->set_output_box({output_x_, y, output_width_, height});
       view->layout();
       y += band;
     }
@@ -710,10 +758,11 @@ int Compositor::terminal_fd_ready(int fd, uint32_t mask, void *data) {
   auto *cell = it->second;
   if (mask & WL_EVENT_WRITABLE) cell->nterm()->flush_input();
   if (mask & (WL_EVENT_READABLE | WL_EVENT_HANGUP | WL_EVENT_ERROR)) cell->nterm()->on_readable();
-  if (!cell->nterm()->running()) compositor->unwatch_cell_pty(cell);
+  if (!cell->nterm()->output_open()) compositor->unwatch_cell_pty(cell);
   else wl_event_source_fd_update(compositor->pty_sources_.at(fd), WL_EVENT_READABLE |
       (cell->nterm()->input_pending() ? WL_EVENT_WRITABLE : 0));
-  compositor->render_cell(cell, cell == compositor->active_cell());
+  if (diftray_cell_surface_visible(cell->surface()) && cell->nterm()->consume_dirty())
+    compositor->render_cell(cell, cell == compositor->active_cell());
   if (compositor->help_pager_active_ && cell == compositor->active_cell()) {
     compositor->paint_help_pager();
   }
@@ -797,7 +846,31 @@ void Compositor::on_new_toplevel(wlr_xdg_toplevel *toplevel, int client_pid) {
     }
   }
   cursor->set_owner_cell(owner);
-  auto *parent = owner ? owner_ncursor(owner) : active_ncursor_;
+  auto *parent = owner ? owner_ncursor(owner) : nullptr;
+  // The launch owner travels with the process, including across shell exit
+  // and daemon reparenting. Read a bounded snapshot of the client's initial
+  // environment; never trust an owner from another compositor session.
+  if (!parent && client_pid > 0) {
+    std::ifstream environment("/proc/" + std::to_string(client_pid) + "/environ",
+                              std::ios::binary);
+    std::string snapshot(65536, '\0');
+    environment.read(snapshot.data(), snapshot.size());
+    snapshot.resize(static_cast<std::size_t>(environment.gcount()));
+    const std::string prefix = "DIFTRAYWM_LAUNCH_OWNER=" + std::to_string(getpid()) + ":";
+    for (std::size_t offset = 0; offset < snapshot.size();) {
+      const auto end = snapshot.find('\0', offset);
+      if (end == std::string::npos) break;
+      const auto entry = std::string_view(snapshot).substr(offset, end - offset);
+      if (entry.starts_with(prefix)) {
+        const auto id = entry.substr(prefix.size());
+        for (auto &view : ncursor_views_)
+          if (view->id() == id) { parent = view.get(); break; }
+        break;
+      }
+      offset = end + 1;
+    }
+  }
+  if (!parent) parent = active_ncursor_;
   cursor->set_owner_ncursor(parent);
   cursor->set_workspace(parent ? parent->workspace() : current_workspace_);
   cursor->set_output_name(parent ? parent->output_name() : active_output_);
@@ -806,8 +879,11 @@ void Compositor::on_new_toplevel(wlr_xdg_toplevel *toplevel, int client_pid) {
   if (wayland_runtime_) {
     diftray_wayland_runtime_attach_gcursor(wayland_runtime_, toplevel);
   }
-  set_active_view(raw);
-  status_line_ = "gcursor " + raw->word_id();
+  // A late window on a background workspace/output must not move the user.
+  if (raw->workspace() == current_workspace_ && raw->output_name() == active_output_) {
+    set_active_view(raw);
+    status_line_ = "gcursor " + raw->word_id();
+  }
   relayout();
 }
 
@@ -889,9 +965,9 @@ std::string Compositor::meta_prefix_spec() const {
 
 bool Compositor::load_keymap(std::string &error) {
   error.clear();
-  keymap_ = Keymap{};
   keymap_error_.clear();
   if (config_.keymap.empty()) {
+    keymap_ = Keymap{};
     keymap_profile_.clear();
     return true;
   }
@@ -904,12 +980,12 @@ bool Compositor::load_keymap(std::string &error) {
   }
   path = path.lexically_normal();
   // Qualified: the member function shadows the free function of the same name.
-  if (!::load_keymap(path.string(), keymap_, error)) {
+  Keymap candidate;
+  if (!::load_keymap(path.string(), candidate, error)) {
     keymap_error_ = error;
-    keymap_ = Keymap{};
-    keymap_profile_.clear();
     return false;
   }
+  keymap_ = std::move(candidate);
   keymap_profile_ = keymap_.default_profile;
   return true;
 }
@@ -1930,15 +2006,10 @@ std::string Compositor::set_shell_override(const std::string &shell, CommandScop
   return "set global shell to " + shell;
 }
 
-std::string Compositor::apply_theme_css(const std::string &css) {
-  if (!theme_engine_) {
-    return "theme engine unavailable";
-  }
-  ThemeProperties parsed;
-  if (!theme_engine_->parse_css(css, parsed)) {
-    return theme_engine_->last_error();
-  }
-  CompositorConfig next = config_;
+std::string Compositor::prepare_theme(const std::string &css, CompositorConfig &next,
+                                       ThemeProperties &parsed, NTermRenderer::Style &style) {
+  if (!theme_engine_) return "theme engine unavailable";
+  if (!theme_engine_->parse_css(css, parsed)) return theme_engine_->last_error();
   for (const auto &[key, value] : parsed.tokens) {
     if (key == "border-color" && !theme_color(value, next.border_color)) return "invalid border-color";
     if (key == "background-color" && !theme_color(value, next.background_color)) return "invalid background-color";
@@ -1949,22 +2020,63 @@ std::string Compositor::apply_theme_css(const std::string &css) {
     if (key == "status-bar-height" && !theme_pixels(value, next.status_bar_height)) return "invalid status-bar-height";
     if (key == "launcher-bar-height" && !theme_pixels(value, next.launcher_bar_height)) return "invalid launcher-bar-height";
   }
+  auto pack = [](const float channels[4]) {
+    auto byte = [](float channel) { return static_cast<uint32_t>(std::clamp(channel, 0.0f, 1.0f) * 255 + 0.5f); };
+    const uint32_t alpha = byte(channels[3]);
+    return (alpha << 24) | ((byte(channels[0]) * alpha / 255) << 16) |
+        ((byte(channels[1]) * alpha / 255) << 8) | (byte(channels[2]) * alpha / 255);
+  };
+  style = {};
+  style.background = pack(next.background_color);
+  style.cursor = style.highlight = pack(next.border_color);
+  style.cursor_thickness = next.border_size;
+  for (const auto &[key, value] : parsed.tokens) {
+    float channels[4];
+    if (key == "terminal-background-color" || key == "terminal-foreground-color" ||
+        key == "terminal-cursor-color" || key == "highlight-color") {
+      if (!theme_color(value, channels)) return "invalid " + key;
+      if (key == "terminal-background-color") style.background = pack(channels);
+      if (key == "terminal-foreground-color") { style.foreground = pack(channels); style.override_foreground = true; }
+      if (key == "terminal-cursor-color") style.cursor = pack(channels);
+      if (key == "highlight-color") style.highlight = pack(channels);
+    }
+    if (key == "terminal-cursor-thickness" && !theme_pixels(value, style.cursor_thickness))
+      return "invalid terminal-cursor-thickness";
+  }
+  return {};
+}
+
+std::string Compositor::apply_theme_css(const std::string &css) {
+  CompositorConfig next = config_;
+  ThemeProperties parsed;
+  NTermRenderer::Style style;
+  const auto error = prepare_theme(css, next, parsed, style);
+  if (!error.empty()) return error;
+  reset_cell_animations();
   config_ = std::move(next);
+  nterm_renderer_.set_style(style);
   theme_engine_->swap_active(std::move(parsed));
   if (wayland_runtime_) {
-    const diftray_wayland_style style = wayland_style();
-    diftray_wayland_runtime_set_style(wayland_runtime_, &style);
-    relayout();
+    const diftray_wayland_style runtime_style = wayland_style();
+    diftray_wayland_runtime_set_style(wayland_runtime_, &runtime_style);
   }
+  relayout();
   return "theme applied";
 }
 
 std::string Compositor::load_theme_file(const std::string &path) {
+  std::error_code error;
+  if (!std::filesystem::exists(path, error)) return "cannot open theme: " + path;
+  if (!std::filesystem::is_regular_file(path, error)) return "theme requires a regular file: " + path;
+  const auto size = std::filesystem::file_size(path, error);
+  if (error) return "cannot read theme: " + error.message();
+  if (size > 1024 * 1024) return "theme exceeds 1 MiB";
   std::ifstream input(path);
   if (!input) return "cannot open theme: " + path;
-  std::ostringstream contents;
-  contents << input.rdbuf();
-  return apply_theme_css(contents.str());
+  std::string contents(static_cast<std::size_t>(size), '\0');
+  input.read(contents.data(), static_cast<std::streamsize>(size));
+  if (input.gcount() != static_cast<std::streamsize>(size)) return "cannot read complete theme: " + path;
+  return apply_theme_css(contents);
 }
 
 // Types text into the focused cell's terminal, which is what a keymap's
@@ -1984,6 +2096,8 @@ std::string Compositor::launch_program(const std::string &command) {
   if (command.empty()) {
     return "launch requires a command";
   }
+  const std::string launch_owner = std::to_string(getpid()) + ":" +
+      (active_ncursor_ ? active_ncursor_->id() : std::string{});
   const pid_t pid = ::fork();
   if (pid < 0) {
     return "launch failed: fork";
@@ -1992,6 +2106,7 @@ std::string Compositor::launch_program(const std::string &command) {
     sigset_t mask;
     sigemptyset(&mask);
     sigprocmask(SIG_SETMASK, &mask, nullptr);
+    setenv("DIFTRAYWM_LAUNCH_OWNER", launch_owner.c_str(), 1);
     if (display_) {
       setenv("WAYLAND_DISPLAY", wayland_socket_.c_str(), 1);
     }

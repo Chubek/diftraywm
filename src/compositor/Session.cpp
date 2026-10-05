@@ -13,6 +13,7 @@
 #include "plugin/PluginManager.hpp"
 #include "lua/LuaEngine.hpp"
 #include "config/Config.hpp"
+#include "theme/ThemeEngine.hpp"
 #include "views/Cell.hpp"
 #include "views/NCursorView.hpp"
 #include "views/GCursorView.hpp"
@@ -97,6 +98,11 @@ const std::string &Compositor::control_socket() const {
 // Single place that projects the configuration onto the runtime's style
 // struct, so init, theme changes and config reload cannot drift apart.
 diftray_wayland_style Compositor::wayland_style() const {
+  const auto highlight = nterm_renderer_.style().highlight;
+  const float highlight_alpha = static_cast<float>(highlight >> 24);
+  const auto highlight_channel = [&](unsigned shift) {
+    return highlight_alpha > 0 ? static_cast<float>((highlight >> shift) & 255) / highlight_alpha : 0.0f;
+  };
   return diftray_wayland_style{
       config_.border_size,
       config_.command_bar_height,
@@ -110,7 +116,7 @@ diftray_wayland_style Compositor::wayland_style() const {
        config_.command_bar_color[2], config_.command_bar_color[3]},
       {config_.launcher_bar_color[0], config_.launcher_bar_color[1],
        config_.launcher_bar_color[2], config_.launcher_bar_color[3]},
-      {1.0f, 0.72f, 0.18f, 1.0f}};
+      {highlight_channel(16), highlight_channel(8), highlight_channel(0), highlight_alpha / 255}};
 }
 
 bool Compositor::install_control_socket() {
@@ -371,24 +377,28 @@ std::string Compositor::reload_config() {
   if (!next.help_path.empty() && std::filesystem::path(next.help_path).is_relative()) {
     next.help_path = (base / next.help_path).lexically_normal().string();
   }
-  const bool font_changed =
-      next.font != config_.font || next.font_size != config_.font_size;
-  config_ = std::move(next);
-  if (!config_.word_pool.empty()) {
-    setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 0);
+  ThemeProperties parsed;
+  NTermRenderer::Style terminal_style;
+  std::string css = ":root {}";
+  if (!next.theme.empty()) {
+    css = read_bounded_file(next.theme, error);
+    if (!error.empty()) return "reload failed: cannot read theme: " + error;
   }
+  error = prepare_theme(css, next, parsed, terminal_style);
+  if (!error.empty()) return "reload failed: " + error;
+  const bool font_changed = next.font != config_.font || next.font_size != config_.font_size;
+  if (font_changed && !nterm_renderer_.init(next.font, next.font_size))
+    return "reload failed: the font could not be applied";
+  // Commit only after configuration, theme and font have all been validated.
+  reset_cell_animations();
+  config_ = std::move(next);
+  nterm_renderer_.set_style(terminal_style);
+  theme_engine_->swap_active(std::move(parsed));
+  if (!config_.word_pool.empty()) setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 1);
+  GCursorView::reload_word_pool();
   help_pager_.set_search_path(config_.help_path.empty()
                                   ? (base / "help").string() + ":" + DIFTRAY_HELP_DEFAULT_PATH
                                   : config_.help_path);
-  if (font_changed && !nterm_renderer_.init(config_.font, config_.font_size)) {
-    return "reloaded configuration but the font could not be applied";
-  }
-  if (!config_.theme.empty()) {
-    const std::string result = load_theme_file(config_.theme);
-    if (result != "theme applied") {
-      return "reloaded configuration but the theme failed: " + result;
-    }
-  }
   if (display_) {
     const diftray_wayland_style style = wayland_style();
     diftray_wayland_runtime_set_style(wayland_runtime_, &style);
@@ -397,10 +407,9 @@ std::string Compositor::reload_config() {
   // broken keymap is reported without failing the reload: the keys the user
   // had a moment ago are better than none, and `keymap show` explains why.
   std::string keymap_status;
-  if (!config_.keymap.empty() && !load_keymap(keymap_status)) {
-    return "reloaded " + config_path_ + " but the keymap failed: " + keymap_status;
-  }
+  const bool keymap_ok = load_keymap(keymap_status);
   relayout();
+  if (!keymap_ok) return "reloaded " + config_path_ + " but the keymap failed: " + keymap_status;
   return "reloaded " + config_path_;
 }
 

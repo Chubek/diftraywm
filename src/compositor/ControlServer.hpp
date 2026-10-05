@@ -10,6 +10,7 @@
 // Reply framing: a one-character verdict line ('+' accepted, '-' rejected)
 // followed by the status line, which may itself span several lines.
 #include <cstdint>
+#include <chrono>
 #include <functional>
 #include <string>
 #include <unordered_map>
@@ -36,17 +37,27 @@ private:
   struct Client {
     wl_event_source *source = nullptr;
     std::string buffer;
+    std::string reply;
+    std::size_t sent = 0;
+    std::chrono::steady_clock::time_point deadline;
+    bool replying = false;
   };
 
   static int on_accept(int fd, uint32_t mask, void *data);
   static int on_client(int fd, uint32_t mask, void *data);
+  static int on_timeout(void *data);
   void handle_line(int fd, const std::string &line);
+  void queue_reply(int fd, std::string payload);
+  void flush_reply(int fd);
   void close_client(int fd);
-  static void write_all(int fd, const std::string &payload);
 
   wl_display *display_ = nullptr;
   int listen_fd_ = -1;
   wl_event_source *listen_source_ = nullptr;
+  wl_event_source *timeout_source_ = nullptr;
+  uint64_t socket_device_ = 0;
+  uint64_t socket_inode_ = 0;
+  bool owns_socket_ = false;
   Dispatcher dispatcher_;
   std::string path_;
   std::string error_;
