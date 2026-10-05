@@ -145,6 +145,21 @@ public:
   const std::string &status_line() const { return status_line_; }
 
 private:
+  enum class RepeatTarget { Terminal, Command, Search, Pager };
+  struct RepeatingKey {
+    RepeatTarget target = RepeatTarget::Terminal;
+    uint32_t keysym = 0, modifiers = 0, unicode = 0, code = 0;
+    Cell *cell = nullptr;
+    View *view = nullptr;
+    int workspace = 0;
+    std::string output;
+  } repeating_key_;
+  wl_event_source *key_repeat_timer_ = nullptr;
+  void cancel_key_repeat();
+  void arm_key_repeat(RepeatTarget target, uint32_t keysym, uint32_t modifiers,
+                      uint32_t unicode, uint32_t keycode);
+  static int repeat_key_ready(void *userdata);
+  void feed_terminal_key(Cell *cell, uint32_t keysym, uint32_t modifiers, uint32_t unicode);
   std::string prepare_theme(const std::string &css, CompositorConfig &next,
                             ThemeProperties &parsed, NTermRenderer::Style &style);
   void layout_current_output();

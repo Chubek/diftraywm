@@ -107,6 +107,11 @@ access to `/dev/input/event*` and `/dev/uinput`, so it is a separate program
 rather than a compositor mode; run `diftrayremap check` first to see whether
 this machine can do it, and why not if it cannot.
 
+`[diftray] repeat_rate = 25` and `repeat_delay = 600` control held-key repeat
+in characters per second and milliseconds. Set the rate to `0` to disable it.
+Repeat applies to terminal/editor/navigation input; compositor action shortcuts
+fire once. Command Bar and help search text support UTF-8 input and backspace.
+
 See [help/keymap.1](help/keymap.1), [help/diftrayremap.1](help/diftrayremap.1)
 and the "Key remapping" section of [GUIDE.md](GUIDE.md).
 

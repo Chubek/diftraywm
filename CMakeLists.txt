@@ -134,7 +134,7 @@ set(ENV{PKG_CONFIG_PATH} "${DIFTRAY_VENDOR_PREFIX}/lib/pkgconfig:${DIFTRAY_VENDO
 # Discard cached system paths when upgrading an existing build directory.
 get_cmake_property(_cache_vars CACHE_VARIABLES)
 foreach(_var IN LISTS _cache_vars)
-  if(_var MATCHES "^(__pkg_config_checked_|pkgcfg_lib_)(WLROOTS_BUILD_DEPS|FREETYPE|HARFBUZZ|FONTCONFIG)")
+  if(_var MATCHES "^(__pkg_config_checked_|pkgcfg_lib_)(WLROOTS_BUILD_DEPS|WLROOTS_PLATFORM_DEPS|FREETYPE|HARFBUZZ|FONTCONFIG|LIBUDEV|LIBEVDEV)")
     unset(${_var} CACHE)
   endif()
 endforeach()
@@ -144,8 +144,15 @@ set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}/diftraywm")
 # ---------------------------------------------------------------------------
 # Library discovery (private vendored prefix first)
 # ---------------------------------------------------------------------------
+# Keep host-only dependencies in a separate pkg-config query. FindPkgConfig
+# resolves all libraries in a query using its combined -L directories; putting
+# pixman/libdrm first also puts /usr/lib first and can select host copies of
+# Wayland, xkbcommon and libinput despite finding their vendored .pc files.
+pkg_check_modules(WLROOTS_PLATFORM_DEPS REQUIRED IMPORTED_TARGET pixman-1 libdrm)
 pkg_check_modules(WLROOTS_BUILD_DEPS REQUIRED IMPORTED_TARGET
-  pixman-1 libdrm wayland-server xkbcommon libinput)
+  wayland-server xkbcommon libinput)
+target_link_libraries(PkgConfig::WLROOTS_BUILD_DEPS INTERFACE
+  PkgConfig::WLROOTS_PLATFORM_DEPS)
 pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
 pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
@@ -155,6 +162,26 @@ pkg_check_modules(NCURSESW REQUIRED IMPORTED_TARGET ncursesw)
 # include path as SYSTEM because they are third-party.
 pkg_check_modules(LIBUDEV REQUIRED IMPORTED_TARGET libudev)
 pkg_check_modules(LIBEVDEV REQUIRED IMPORTED_TARGET libevdev)
+
+# Fail during configuration if an existing cache or host search path ever
+# bypasses the mandatory vendored libraries. Auxiliary platform libraries
+# (such as libm) are intentionally allowed to come from the host.
+foreach(_dependency IN ITEMS
+    "WLROOTS_BUILD_DEPS|wayland-server" "WLROOTS_BUILD_DEPS|xkbcommon"
+    "WLROOTS_BUILD_DEPS|input" "FREETYPE|freetype" "HARFBUZZ|harfbuzz"
+    "FONTCONFIG|fontconfig" "LIBUDEV|udev" "LIBEVDEV|evdev")
+  string(REPLACE "|" ";" _parts "${_dependency}")
+  list(GET _parts 0 _pkg)
+  list(GET _parts 1 _library)
+  set(_resolved "${pkgcfg_lib_${_pkg}_${_library}}")
+  get_filename_component(_resolved_dir "${_resolved}" REALPATH)
+  get_filename_component(_vendor_dir "${DIFTRAY_VENDOR_PREFIX}/lib" REALPATH)
+  string(FIND "${_resolved_dir}" "${_vendor_dir}/" _vendor_match)
+  if(NOT _vendor_match EQUAL 0)
+    message(FATAL_ERROR
+      "${_library} must resolve to ${DIFTRAY_VENDOR_PREFIX}/lib, got '${_resolved}'")
+  endif()
+endforeach()
 
 
 

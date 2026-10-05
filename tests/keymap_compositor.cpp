@@ -8,8 +8,8 @@
 // binding from the configuration program still wins over a profile. That is
 // what this file is for.
 //
-// The compositor matches chords by XKB key code, because the INI spells a chord
-// as an evdev code plus modifier bits. These tests run without a seat, so the
+// The compositor matches chords by Linux evdev key code, as delivered by wlroots
+// and used by the INI. These tests run without a seat, so the
 // key code has to be passed in, and XKB_KEY_q is the keysym 0x71 rather than the
 // code, so the code comes from input-event-codes.
 
@@ -32,13 +32,12 @@ namespace {
 constexpr uint32_t kPressed = WL_KEYBOARD_KEY_STATE_PRESSED;
 constexpr uint32_t kLogo = WLR_MODIFIER_LOGO;
 constexpr uint32_t kCtrl = WLR_MODIFIER_CTRL;
-constexpr uint32_t kXkbOffset = 8;
-constexpr uint32_t q_code = KEY_Q + kXkbOffset;
-constexpr uint32_t g_code = KEY_G + kXkbOffset;
-constexpr uint32_t n_code = KEY_N + kXkbOffset;
-constexpr uint32_t x_code = KEY_X + kXkbOffset;
-constexpr uint32_t a_code = KEY_A + kXkbOffset;
-constexpr uint32_t y_code = KEY_Y + kXkbOffset;
+constexpr uint32_t q_code = KEY_Q;
+constexpr uint32_t g_code = KEY_G;
+constexpr uint32_t n_code = KEY_N;
+constexpr uint32_t x_code = KEY_X;
+constexpr uint32_t a_code = KEY_A;
+constexpr uint32_t y_code = KEY_Y;
 
 int g_failures = 0;
 int g_checks = 0;
@@ -228,6 +227,8 @@ void test_check_and_reload() {
   c.handle_key(XKB_KEY_y, kCtrl, kPressed, 0, y_code);
   check(c.current_workspace() == 8, "failed reload discarded the working keymap");
   check(!c.keymap_error().empty(), "failed reload lost its diagnostic");
+  check(c.keymap_info().find("previous bindings retained") != std::string::npos,
+        "failed reload incorrectly reported that only built-ins remained");
 }
 
 // 6. The help pager keys come from the keymap's [diftray] section.

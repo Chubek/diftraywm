@@ -26,6 +26,15 @@ chord = Action(argument)
 An unknown section, chord or action is a hard error reported with a line
 number, not a silently ignored line, so a typo appears as a message instead of
 a key that quietly does nothing.
+.SH KEY REPEAT
+The [diftray] section accepts repeat_rate (0 to 100 characters per second) and
+repeat_delay (0 to 5000 milliseconds). Defaults are 25 and 600. A rate of 0
+disables repeat. These settings apply to the compositor's terminal/editor input
+and to repeat information advertised to graphical clients. The system-wide
+remapper leaves repeat timing to its downstream consumers.
+.PP
+Held text and navigation keys repeat. Launch, kill and workspace shortcuts run
+once. Releasing the key, changing focus or reloading the keymap stops repeat.
 .SH CHORDS
 A chord is a key plus exactly the modifiers written.
 .TP

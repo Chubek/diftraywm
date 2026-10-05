@@ -157,6 +157,13 @@ commented-out lines in `[default]`, so you can read, change or delete them. An
 unknown chord or action is an error with a line number, never a silently
 ignored line.
 
+The `[diftray]` section also accepts `repeat_rate` (0–100 characters per second)
+and `repeat_delay` (0–5000 milliseconds). Defaults are 25 and 600; a rate of 0
+disables repeat. Terminal keys, text editors and pager navigation can repeat.
+Launch, kill and workspace shortcuts execute once. Changing focus or releasing
+the key stops pending repeat. Command Bar and help search text accept UTF-8;
+backspace removes the last Unicode code point.
+
 ```
 :keymap show          or   diftrayctl keymap-show
 :keymap reload        or   diftrayctl keymap-reload

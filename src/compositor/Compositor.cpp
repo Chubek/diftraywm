@@ -13,6 +13,7 @@
 #include "views/NCursorView.hpp"
 #include "views/TCursorView.hpp"
 #include "views/View.hpp"
+#include "input/TextInput.hpp"
 
 #include <termlib.h>
 #include <wayland-server-core.h>
@@ -297,6 +298,7 @@ bool Compositor::init() {
 
   const diftray_wayland_style style = wayland_style();
   wayland_runtime_ = diftray_wayland_runtime_create(display_.get(), &style);
+  diftray_wayland_runtime_set_repeat_info(wayland_runtime_, keymap_.repeat_rate, keymap_.repeat_delay);
   if (!wayland_runtime_) {
     status_line_ = "failed to initialize wlroots runtime";
     return false;
@@ -367,6 +369,11 @@ int Compositor::run() {
 
 void Compositor::stop() {
   running_ = false;
+  cancel_key_repeat();
+  if (key_repeat_timer_) {
+    wl_event_source_remove(key_repeat_timer_);
+    key_repeat_timer_ = nullptr;
+  }
   // Connections are served on the same event loop that is about to stop, so
   // drop them before the display tears down the loop's sources.
   if (control_server_) control_server_->stop();
@@ -964,11 +971,13 @@ std::string Compositor::meta_prefix_spec() const {
 }
 
 bool Compositor::load_keymap(std::string &error) {
+  cancel_key_repeat();
   error.clear();
   keymap_error_.clear();
   if (config_.keymap.empty()) {
     keymap_ = Keymap{};
     keymap_profile_.clear();
+    diftray_wayland_runtime_set_repeat_info(wayland_runtime_, keymap_.repeat_rate, keymap_.repeat_delay);
     return true;
   }
   // Relative paths resolve against the config file's directory, the same rule
@@ -987,6 +996,7 @@ bool Compositor::load_keymap(std::string &error) {
   }
   keymap_ = std::move(candidate);
   keymap_profile_ = keymap_.default_profile;
+  diftray_wayland_runtime_set_repeat_info(wayland_runtime_, keymap_.repeat_rate, keymap_.repeat_delay);
   return true;
 }
 
@@ -1006,9 +1016,10 @@ void Compositor::keymap_reset_profile() {
 
 std::string Compositor::keymap_info() const {
   if (!keymap_error_.empty()) {
-    return "keymap: " + keymap_error_ + " (built-in keys in force)";
+    return "keymap: " + keymap_error_ + (keymap_.profile_path.empty()
+        ? " (built-in keys in force)" : " (previous bindings retained)");
   }
-  if (keymap_.empty()) {
+  if (keymap_.profile_path.empty()) {
     return "keymap: none loaded (" +
            (config_.keymap.empty() ? std::string("no keymap configured")
                                    : config_.keymap) +
@@ -1024,11 +1035,10 @@ bool Compositor::apply_keymap(uint32_t keysym, uint32_t modifiers, uint32_t keyc
   if (keymap_.empty()) {
     return false;
   }
-  // The evdev backend and the compositor agree on chord identity: the kernel
-  // key code is the XKB key code minus the eight keys libxkbcommon reserves,
-  // and the modifier bits are the same set libinput reports.
+  // wlroots delivers Linux evdev codes. Only calls into XKB add its offset;
+  // physical configuration bindings and INI chords use the original code.
   KeyChord chord;
-  chord.code = keycode >= 8 ? keycode - 8 : 0;
+  chord.code = keycode <= 767 ? keycode : 0;
   chord.mods = keymap_mods(modifiers);
   if (chord.code == 0) {
     return false;
@@ -1090,15 +1100,11 @@ bool Compositor::apply_keymap(uint32_t keysym, uint32_t modifiers, uint32_t keyc
         bool *flag;
         ~Guard() { *flag = false; }
       } guard{&keymap_remap_guard_};
-      // xkb_state_key_get_utf8 writes into a caller-supplied buffer, so ask for
-      // the target character the same way the input path does: a remap that
-      // reaches a printable key must still type it.
-      char utf8[7] = {};
-      xkb_state_key_get_utf8(seat_state(), target_code, utf8, sizeof(utf8));
+      // Keep the complete Unicode scalar; a UTF-8 lead byte is not a character.
+      const uint32_t target_unicode = xkb_state_key_get_utf32(seat_state(), target_code);
       handle_key(target_sym, wlr_mods(action->chord.mods),
                  WL_KEYBOARD_KEY_STATE_PRESSED,
-                 utf8[0] ? static_cast<uint32_t>(static_cast<unsigned char>(utf8[0])) : 0,
-                 target_code);
+                 target_unicode, action->chord.code);
       return true;
     }
     case Action::Kind::none:
@@ -1119,9 +1125,7 @@ bool Compositor::match_meta_prefix(uint32_t keysym, uint32_t modifiers,
     if (prefix.mods != keymap_mods(modifiers)) {
       return false;
     }
-    if (keycode >= 8 && keycode - 8 == prefix.code) {
-      return true;
-    }
+    if (keycode <= 767) return keycode == prefix.code;
     // Without a usable key code -- headless tests, or a key event that arrived
     // before the seat had one -- ask the seat's keymap what the prefix key
     // produces and compare keysyms. With no seat there is nothing to compare
@@ -1143,6 +1147,7 @@ bool Compositor::match_meta_prefix(uint32_t keysym, uint32_t modifiers,
 }
 
 void Compositor::open_command_bar(CommandScope scope, const std::string &prefix) {
+  cancel_key_repeat();
   command_bar_open_ = true;
   launcher_mode_ = prefix == "launch";
   command_bar_.visible = true;
@@ -1152,6 +1157,7 @@ void Compositor::open_command_bar(CommandScope scope, const std::string &prefix)
 }
 
 void Compositor::close_command_bar() {
+  cancel_key_repeat();
   command_bar_open_ = false;
   launcher_mode_ = false;
   command_bar_.visible = false;
@@ -1170,7 +1176,7 @@ bool Compositor::help_key_matches(const std::string &binding, uint32_t keysym,
   if (normalized == "up") return keysym == XKB_KEY_Up;
   if (normalized == "down") return keysym == XKB_KEY_Down;
   return binding.size() == 1 && unicode != 0 &&
-         static_cast<unsigned char>(binding[0]) == static_cast<unsigned char>(unicode);
+         static_cast<unsigned char>(binding[0]) == unicode;
 }
 
 bool Compositor::feed_help_search_key(uint32_t keysym, uint32_t unicode) {
@@ -1182,9 +1188,9 @@ bool Compositor::feed_help_search_key(uint32_t keysym, uint32_t unicode) {
     help_search_open_ = false;
     help_search_input_.clear();
   } else if (keysym == XKB_KEY_BackSpace) {
-    if (!help_search_input_.empty()) help_search_input_.pop_back();
-  } else if (unicode >= 32 && unicode < 127) {
-    help_search_input_.push_back(static_cast<char>(unicode));
+    text_input::erase_last(help_search_input_);
+  } else {
+    text_input::append(help_search_input_, unicode);
   }
   relayout();
   return true;
@@ -1250,7 +1256,8 @@ bool Compositor::feed_command_bar_key(uint32_t keysym, uint32_t unicode) {
     update_chrome();
     return true;
   }
-  if (unicode >= 32 && unicode < 127) {
+  if (unicode >= 32 && unicode != 127 && unicode <= 0x10ffff &&
+      !(unicode >= 0xd800 && unicode <= 0xdfff)) {
     command_bar_.handle_key(static_cast<unsigned int>(unicode));
     update_chrome();
     return true;
@@ -1258,11 +1265,78 @@ bool Compositor::feed_command_bar_key(uint32_t keysym, uint32_t unicode) {
   return true;
 }
 
+void Compositor::cancel_key_repeat() {
+  repeating_key_.code = 0;
+  if (key_repeat_timer_) wl_event_source_timer_update(key_repeat_timer_, 0);
+}
+
+void Compositor::arm_key_repeat(RepeatTarget target, uint32_t keysym,
+                                uint32_t modifiers, uint32_t unicode, uint32_t keycode) {
+  if (!display_ || keymap_.repeat_rate == 0 || keycode == 0 || keycode > 767 || keymap_remap_guard_ ||
+      keysym == XKB_KEY_Return || keysym == XKB_KEY_KP_Enter || keysym == XKB_KEY_Escape) return;
+  if (auto *map = seat_keymap(); map && !xkb_keymap_key_repeats(map, keycode + 8)) return;
+  // Logic-only input has no keymap; recognize text/navigation without treating
+  // a Shift or Caps Lock event as a repeatable character.
+  if (!seat_keymap() && unicode == 0 && keysym != XKB_KEY_BackSpace &&
+      keysym != XKB_KEY_Delete && keysym != XKB_KEY_Tab &&
+      !(keysym >= XKB_KEY_Home && keysym <= XKB_KEY_End)) return;
+  if (!key_repeat_timer_)
+    key_repeat_timer_ = wl_event_loop_add_timer(wl_display_get_event_loop(display_.get()),
+                                               repeat_key_ready, this);
+  if (!key_repeat_timer_) return;
+  repeating_key_ = {target, keysym, modifiers, unicode, keycode,
+                    active_cell(), active_view_, current_workspace_, active_output_};
+  wl_event_source_timer_update(key_repeat_timer_, std::max(1, keymap_.repeat_delay));
+}
+
+void Compositor::feed_terminal_key(Cell *cell, uint32_t keysym, uint32_t modifiers,
+                                   uint32_t unicode) {
+  cell->nterm()->handle_key(keysym, keysym < 128 ? keysym : 0, tsm_mods(modifiers), unicode);
+  if (auto source = pty_sources_.find(cell->nterm()->master_fd()); source != pty_sources_.end())
+    wl_event_source_fd_update(source->second, WL_EVENT_READABLE |
+        (cell->nterm()->input_pending() ? WL_EVENT_WRITABLE : 0));
+  render_cell(cell, true);
+}
+
+int Compositor::repeat_key_ready(void *userdata) {
+  auto *self = static_cast<Compositor *>(userdata);
+  const auto key = self->repeating_key_;
+  const bool same_context = key.code && key.cell == self->active_cell() &&
+      key.view == self->active_view_ && key.workspace == self->current_workspace_ &&
+      key.output == self->active_output_ && !self->pending_kill_ &&
+      (!self->seat_keymap() || key.modifiers ==
+          diftray_wayland_runtime_keyboard_modifiers(self->wayland_runtime_));
+  if (!same_context) { self->cancel_key_repeat(); return 0; }
+  bool repeated = false;
+  if (key.target == RepeatTarget::Search && self->help_search_open_) {
+    self->feed_help_search_key(key.keysym, key.unicode);
+    repeated = true;
+  } else if (key.target == RepeatTarget::Command && self->command_bar_open_ && !self->help_search_open_) {
+    self->feed_command_bar_key(key.keysym, key.unicode);
+    repeated = true;
+  } else if (key.target == RepeatTarget::Pager && self->help_pager_active_ &&
+             !self->help_search_open_ && !self->command_bar_open_) {
+    self->handle_help_pager_key(key.keysym, key.unicode);
+    repeated = true;
+  } else if (key.target == RepeatTarget::Terminal && key.cell && key.cell->nterm() &&
+             !self->active_gcursor() && !self->command_bar_open_ && !self->help_pager_active_ &&
+             !self->ncursor_view()->cell_select_mode() && !self->notelet_cells_.contains(key.cell)) {
+    self->feed_terminal_key(key.cell, key.keysym, key.modifiers, key.unicode);
+    repeated = true;
+  }
+  if (repeated && self->keymap_.repeat_rate > 0)
+    wl_event_source_timer_update(self->key_repeat_timer_, std::max(1, 1000 / self->keymap_.repeat_rate));
+  else self->cancel_key_repeat();
+  return 0;
+}
+
 bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
                             uint32_t unicode, uint32_t keycode) {
   if (state != WL_KEYBOARD_KEY_STATE_PRESSED) {
+    if (keycode == repeating_key_.code) cancel_key_repeat();
     return command_bar_open_ || active_gcursor() == nullptr;
   }
+  cancel_key_repeat();
   if (pending_kill_) {
     Cell *target = pending_kill_;
     if (keysym == XKB_KEY_y || keysym == XKB_KEY_Y || keysym == XKB_KEY_Return) {
@@ -1288,9 +1362,13 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     return true;
   }
   if (help_search_open_) {
+    if (keysym == XKB_KEY_BackSpace || unicode >= 32)
+      arm_key_repeat(RepeatTarget::Search, keysym, modifiers, unicode, keycode);
     return feed_help_search_key(keysym, unicode);
   }
   if (command_bar_open_ && !(real_meta && keysym == XKB_KEY_colon)) {
+    if (keysym == XKB_KEY_BackSpace || unicode >= 32)
+      arm_key_repeat(RepeatTarget::Command, keysym, modifiers, unicode, keycode);
     return feed_command_bar_key(keysym, unicode);
   }
   // An armed Meta prefix (Ctrl+Q by default) lends the Logo modifier to this
@@ -1347,6 +1425,10 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
     return true;
   }
   if (help_pager_active_ && !meta) {
+    if (keysym != XKB_KEY_Escape &&
+        !help_key_matches(keymap_.help_key_close, keysym, unicode) &&
+        !help_key_matches(keymap_.help_key_search, keysym, unicode))
+      arm_key_repeat(RepeatTarget::Pager, keysym, real_mods, unicode, keycode);
     return handle_help_pager_key(keysym, unicode);
   }
   if (meta && keysym == XKB_KEY_d) {
@@ -1525,12 +1607,10 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
       }
       return true;
     }
-    cell->nterm()->handle_key(keysym, keysym < 128 ? keysym : 0, tsm_mods(real_mods),
-                              unicode);
-    if (auto source = pty_sources_.find(cell->nterm()->master_fd()); source != pty_sources_.end())
-      wl_event_source_fd_update(source->second, WL_EVENT_READABLE |
-          (cell->nterm()->input_pending() ? WL_EVENT_WRITABLE : 0));
-    render_cell(cell, true);
+    // Compositor actions above never arm repeat. Only terminal text/navigation
+    // reaches this path, and XKB excludes modifier and other nonrepeatable keys.
+    arm_key_repeat(RepeatTarget::Terminal, keysym, real_mods, unicode, keycode);
+    feed_terminal_key(cell, keysym, real_mods, unicode);
     return true;
   }
   return true;
@@ -1568,6 +1648,7 @@ std::string Compositor::open_help_bookmark(const std::string &name) {
 }
 
 void Compositor::set_active_view(View *view) {
+  if (view != active_view_) cancel_key_repeat();
   if (view && view->output_name() != active_output_) focus_output(view->output_name());
   if (view && view->type() == ViewType::GCURSOR) {
     auto *cursor = static_cast<GCursorView *>(view);
@@ -1646,6 +1727,7 @@ std::string Compositor::spawn_cell(bool above) {
 }
 
 std::string Compositor::erase_cell(Cell *cell) {
+  if (repeating_key_.cell == cell) cancel_key_repeat();
   if (!cell) {
     return "kill failed: no active cell";
   }

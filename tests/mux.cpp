@@ -23,13 +23,11 @@ constexpr uint32_t kLogo = WLR_MODIFIER_LOGO;
 constexpr uint32_t kCtrl = WLR_MODIFIER_CTRL;
 
 // The compositor matches chords by key code, because the keymap INI spells a
-// chord as an evdev code plus modifier bits, and an XKB key code is that code
-// plus the eight keys libxkbcommon reserves. Note that XKB_KEY_q is the
+// chord as an evdev code plus modifier bits, matching wlroots events. Note that XKB_KEY_q is the
 // *keysym* 0x71, not the key code, so the code has to come from
 // input-event-codes. The tests run without a seat, so it must be passed in.
-constexpr uint32_t kXkbOffset = 8;
-constexpr uint32_t q_keycode = KEY_Q + kXkbOffset;
-constexpr uint32_t x_keycode = KEY_X + kXkbOffset;
+constexpr uint32_t q_keycode = KEY_Q;
+constexpr uint32_t x_keycode = KEY_X;
 
 void check(bool ok, const std::string &message) {
   if (!ok) {

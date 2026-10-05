@@ -34,6 +34,7 @@ struct diftray_pixel_buffer {
 };
 
 struct diftray_wayland_runtime {
+  int repeat_rate, repeat_delay;
   struct wl_display *display;
   struct wlr_backend *backend;
   struct wlr_renderer *renderer;
@@ -583,9 +584,25 @@ static void keyboard_modifiers(struct wl_listener *listener, void *data) {
                                      &keyboard->keyboard->modifiers);
 }
 
+void diftray_wayland_runtime_set_repeat_info(struct diftray_wayland_runtime *runtime,
+                                            int rate, int delay) {
+  if (!runtime) return;
+  runtime->repeat_rate = rate;
+  runtime->repeat_delay = delay;
+  struct diftray_keyboard *keyboard;
+  wl_list_for_each(keyboard, &runtime->keyboards, link)
+    wlr_keyboard_set_repeat_info(keyboard->keyboard, rate, delay);
+}
+
+uint32_t diftray_wayland_runtime_keyboard_modifiers(struct diftray_wayland_runtime *runtime) {
+  struct wlr_keyboard *keyboard = runtime ? wlr_seat_get_keyboard(runtime->seat) : NULL;
+  return keyboard ? wlr_keyboard_get_modifiers(keyboard) : 0;
+}
+
 static void keyboard_key(struct wl_listener *listener, void *data) {
   struct diftray_keyboard *keyboard = wl_container_of(listener, keyboard, key);
   struct wlr_keyboard_key_event *event = data;
+  wlr_seat_set_keyboard(keyboard->runtime->seat, keyboard->keyboard);
   const xkb_keysym_t *symbols;
   int count = xkb_state_key_get_syms(keyboard->keyboard->xkb_state,
                                      event->keycode + 8, &symbols);
@@ -597,6 +614,10 @@ static void keyboard_key(struct wl_listener *listener, void *data) {
   if (event->state == WL_KEYBOARD_KEY_STATE_RELEASED && tracked) {
     handled = keyboard->consumed_keys[event->keycode];
     keyboard->consumed_keys[event->keycode] = false;
+    if (keyboard->runtime->key_handler)
+      keyboard->runtime->key_handler(keyboard->runtime->key_handler_userdata,
+          count > 0 ? symbols[0] : 0, modifiers, event->state, unicode,
+          event->time_msec, event->keycode);
   } else if (keyboard->runtime->key_handler) {
     // A key may have multiple symbols, but represents a single key event.
     handled = keyboard->runtime->key_handler(
@@ -618,6 +639,13 @@ static void keyboard_destroy(struct wl_listener *listener, void *data) {
   struct diftray_keyboard *keyboard =
       wl_container_of(listener, keyboard, destroy);
   (void)data;
+  if (keyboard->runtime->key_handler) {
+    for (uint32_t code = 0; code < sizeof(keyboard->consumed_keys); ++code) {
+      if (keyboard->consumed_keys[code])
+        keyboard->runtime->key_handler(keyboard->runtime->key_handler_userdata,
+            XKB_KEY_NoSymbol, 0, WL_KEYBOARD_KEY_STATE_RELEASED, 0, 0, code);
+    }
+  }
   wl_list_remove(&keyboard->modifiers.link);
   wl_list_remove(&keyboard->key.link);
   wl_list_remove(&keyboard->destroy.link);
@@ -630,6 +658,7 @@ static void new_keyboard(struct diftray_wayland_runtime *runtime,
   struct diftray_keyboard *keyboard = calloc(1, sizeof(*keyboard));
   keyboard->runtime = runtime;
   keyboard->keyboard = wlr_keyboard_from_input_device(device);
+  wlr_keyboard_set_repeat_info(keyboard->keyboard, runtime->repeat_rate, runtime->repeat_delay);
   struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
   struct xkb_keymap *keymap =
       xkb_keymap_new_from_names(context, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);

@@ -22,6 +22,9 @@ build_meson() {
   shift
   dep_build="$build_dir/vendor-build/$dep"
   if [ -f "$dep_build/build.ninja" ]; then
+    # Older builds configured libinput before its vendored dependencies existed.
+    # Meson otherwise retains those system-library paths on reconfiguration.
+    if [ "$dep" = libinput ]; then set -- --clearcache "$@"; fi
     "$meson_bin" setup --reconfigure "$dep_build" "$root_dir/third_party/$dep" \
       --prefix="$prefix" --libdir=lib --buildtype=release --wrap-mode=nodownload "$@"
   else
@@ -36,8 +39,6 @@ build_meson wayland -Dtests=false -Ddocumentation=false -Dbook=false
 build_meson wayland-protocols -Dtests=false
 build_meson libxkbcommon -Denable-tools=false -Denable-x11=false \
   -Denable-docs=false -Denable-wayland=false -Denable-xkbregistry=false
-build_meson libinput -Dtests=false -Ddocumentation=false -Ddebug-gui=false \
-  -Dlibwacom=false -Dlua-plugins=disabled
 build_meson freetype -Dharfbuzz=disabled -Dtests=disabled
 build_meson harfbuzz -Dfreetype=enabled -Dtests=disabled -Ddocs=disabled \
   -Dutilities=disabled -Dglib=disabled -Dgobject=disabled -Dintrospection=disabled \
@@ -173,3 +174,10 @@ if [ ! -f "$udev_build/Makefile" ]; then
 fi
 make -C "$udev_build" -j "$jobs"
 make -C "$udev_build" install
+
+# libinput consumes both libraries, so discover it only after their headers,
+# shared objects and pkg-config metadata have been installed into the prefix.
+# Its runtime path also resolves those indirect dependencies beside libinput,
+# both in the build prefix and in the installed private library directory.
+build_meson libinput -Dtests=false -Ddocumentation=false -Ddebug-gui=false \
+  -Dlibwacom=false -Dlua-plugins=disabled '-Dc_link_args=-Wl,-rpath,$ORIGIN'

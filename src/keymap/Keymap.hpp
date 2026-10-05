@@ -133,9 +133,11 @@ struct Keymap {
   std::string help_key_page_up = "b";
   std::string help_key_line_down = "j";
   std::string help_key_line_up = "k";
-  // True once [diftray] has assigned at least one of them, so a file that only
-  // sets help keys is not mistaken for an empty one.
+  // True once [diftray] has assigned a setting, so a file with only compositor
+  // settings is not mistaken for an empty one.
   bool help_key_set = false;
+  int repeat_rate = 25;   // characters per second; zero disables repeat
+  int repeat_delay = 600; // milliseconds
 
   // When true the keymap file asks for the privileged evdev backend as well.
   // The compositor still applies the keymap itself either way; see
@@ -174,4 +176,3 @@ bool parse_key_chord(std::string_view text, KeyChord &out, std::string &error);
 bool parse_device_id(std::string_view text, DeviceId &out, std::string &error);
 // Looks up a Linux key name ("q", "f8", "leftbrace") or a single character.
 bool key_code_from_name(std::string_view name, uint32_t &out, std::string &error);
-

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -380,6 +381,7 @@ std::string Keymap::summary() const {
       << (devices.empty() ? std::string("(all keyboards)") : std::to_string(devices.size()))
       << "\n";
   out << "system-wide: " << (system_wide ? "requested" : "no") << "\n";
+  out << "repeat: " << repeat_rate << " Hz, delay: " << repeat_delay << " ms\n";
   return out.str();
 }
 
@@ -504,6 +506,17 @@ bool parse_keymap(std::string_view source, const std::string &path, Keymap &out,
       continue;
     }
     if (section == "diftray") {
+      if (key == "repeat_rate" || key == "repeat_delay") {
+        int parsed = 0;
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+        const int maximum = key == "repeat_rate" ? 100 : 5000;
+        if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
+            parsed < 0 || parsed > maximum)
+          return fail(key + " must be an integer between 0 and " + std::to_string(maximum));
+        (key == "repeat_rate" ? out.repeat_rate : out.repeat_delay) = parsed;
+        out.help_key_set = true;
+        continue;
+      }
       std::string *target = nullptr;
       if (key == "help_key_close") target = &out.help_key_close;
       else if (key == "help_key_search") target = &out.help_key_search;
@@ -618,4 +631,3 @@ bool load_keymap(const std::string &path, Keymap &out, std::string &error) {
   }
   return parse_keymap(source, path, out, error);
 }
-

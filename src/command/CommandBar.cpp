@@ -1,6 +1,7 @@
 #include "command/CommandBar.hpp"
 
 #include "command/CommandHandler.hpp"
+#include "input/TextInput.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -44,14 +45,10 @@ void CommandBar::handle_key(unsigned int key) {
     return;
   }
   if (key == '\b' || key == 127) {
-    if (!input_buffer.empty()) {
-      input_buffer.pop_back();
-    }
+    text_input::erase_last(input_buffer);
     return;
   }
-  if (key < 128 && std::isprint(static_cast<unsigned char>(key))) {
-    input_buffer.push_back(static_cast<char>(key));
-  }
+  text_input::append(input_buffer, key);
 }
 
 bool CommandBar::dispatch(std::string_view input) {

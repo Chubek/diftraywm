@@ -1,6 +1,6 @@
 # Implementation status
 
-DiftrayWM runs with real wlroots headless outputs and has 23 CTest targets. The
+DiftrayWM runs with real wlroots headless outputs and has 24 CTest targets. The
 complete AGENTS.md specification is still in progress; passing tests does not
 establish that every desktop application or physical GPU backend works.
 
@@ -48,6 +48,10 @@ dependency chain supplies the compositor and terminal libraries.
   per-surface visibility and the compositor's selected window, and switching
   away clears the client's activated state. Reloading the word pool updates new
   identifiers while preserving live identifiers and uniqueness.
+- Input paths use Linux key codes consistently, adding XKB's offset only when
+  querying XKB. Terminal and editor keys repeat with INI-configured rate/delay;
+  releases, focus changes, cell removal and reload stop pending repeat. Command
+  Bar and help searches accept bounded UTF-8 text and erase whole code points.
 
 ## Validation
 
