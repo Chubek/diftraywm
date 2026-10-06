@@ -242,6 +242,7 @@ bool Compositor::init() {
   if (!nterm_renderer_.init(config_.font, config_.font_size)) {
     status_line_ = "failed to initialize text renderer"; return false;
   }
+  nterm_renderer_.glyphs()->set_ligatures(config_.font_ligatures);
   command_context_.compositor = this;
   rebuild_command_context();
   active_view_ = active_ncursor_;

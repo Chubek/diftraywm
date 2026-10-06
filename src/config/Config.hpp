@@ -30,6 +30,7 @@ struct CompositorConfig {
   std::string shell = "libshell";
   std::string font = "monospace";
   int font_size = 14;
+  bool font_ligatures = true;
   std::string ncursor_mode = "stack";
   std::string gcursor_mode = "tab";
   std::string word_pool = "/usr/share/dict/words";

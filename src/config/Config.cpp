@@ -192,6 +192,11 @@ bool apply(const Settings &settings, CompositorConfig &config, std::string &erro
         error = "font_size must be an integer >= 8";
         return false;
       }
+    } else if (key == "font_ligatures") {
+      if (!parse_bool(value, config.font_ligatures)) {
+        error = "font_ligatures must be true or false";
+        return false;
+      }
     } else if (key == "ncursor_mode" || key == "gcursor_mode") {
       if (value != "stack" && value != "tab") {
         error = key + " must be stack or tab";

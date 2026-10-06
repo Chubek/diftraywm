@@ -34,6 +34,30 @@ int main() {
     const auto accented = *glyphs->glyph(combining, 2, false);
     check(plain.coverage != accented.coverage || plain.height != accented.height,
           "combining character was dropped during shaping");
+    glyphs->set_ligatures(false);
+    check(glyphs->glyph(combining, 2, false)->coverage == accented.coverage,
+          "disabling optional ligatures broke combining marks");
+    glyphs->set_ligatures(true);
+
+    // Supply an installed programming font to exercise calt substitutions
+    // without making the ordinary test depend on a particular host font.
+    if (const char *font = std::getenv("DIFTRAY_TEST_LIGATURE_FONT")) {
+      NTermRenderer programming;
+      check(programming.init(font, 24), "programming font initialization failed");
+      NTerm sample;
+      sample.resize(16, 1);
+      sample.display("\x1b[?25l!= -> === <=");
+      const int w = 16 * programming.glyphs()->cell_width();
+      const int h = programming.glyphs()->cell_height();
+      std::vector<uint32_t> enabled, disabled, restored;
+      programming.render(&sample, enabled, w, h, false);
+      programming.glyphs()->set_ligatures(false);
+      programming.render(&sample, disabled, w, h, false);
+      check(enabled != disabled, "programming ligature toggle did not change rendering");
+      programming.glyphs()->set_ligatures(true);
+      programming.render(&sample, restored, w, h, false);
+      check(enabled == restored, "ligature toggle retained stale cached glyphs");
+    }
 
     auto style = renderer.style();
     style.background = 0xff123456;

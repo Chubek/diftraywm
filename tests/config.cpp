@@ -17,6 +17,15 @@ int main() {
     return p.string();
   };
   std::string error;
+  check(CompositorConfig{}.font_ligatures, "ligatures must default to enabled");
+  for (const auto &p : {
+      path("ligatures.conf", "general {\n font_ligatures = false\n}\n"),
+      path("ligatures.toml", "[general]\nfont_ligatures = false\n"),
+      path("ligatures.yaml", "general:\n  font_ligatures: false\n")}) {
+    CompositorConfig c;
+    check(load_compositor_config(p, c, error), error);
+    check(!c.font_ligatures, "ligature setting was ignored");
+  }
   for (const auto &p : {
       path("settings.conf", "# general configuration\ngeneral {\n\n # comment inside section\n font_size = 21\n font = Test Font\n border_color = #12345678\n}\nterminal {\n shell = /bin/bash\n}\n"),
       path("settings.toml", "[general]\nfont_size = 21\nfont = 'Test Font'\nborder_color = '#12345678'\n[terminal]\nshell = '/bin/bash'\n"),
@@ -50,6 +59,9 @@ int main() {
       path("monitor-scale.toml", "[[monitors]]\nname = 'DP-1'\nscale = nan\n"),
       path("monitor-range.yaml", "monitors:\n - name: DP-1\n   scale: 0\n"),
       path("bad.conf", "general {\n font = Changed\n font_size = bad\n}\n"),
+      path("bad-ligatures.conf", "general {\n font_ligatures = invalid\n}\n"),
+      path("bad-ligatures.toml", "[general]\nfont_ligatures = 'invalid'\n"),
+      path("bad-ligatures.yaml", "general:\n  font_ligatures: invalid\n"),
       path("bad.toml", "[general]\nfont = 'Changed'\nfont_size = 2\n"),
       path("bad.yaml", "general:\n  font: Changed\n  font_size: 2\n"),
       path("unknown.yaml", "general:\n  typo: 2\n"),

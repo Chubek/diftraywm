@@ -3,7 +3,7 @@
 # Vendored libraries are built into a private prefix before pkg-config
 # discovery. Only platform dependencies absent from third_party use the host.
 
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 4.3)
 
 project(DiftrayWM
   VERSION 0.1.0

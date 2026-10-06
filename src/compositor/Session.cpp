@@ -277,6 +277,7 @@ std::string Compositor::session_status() const {
   out << "config: " << config_file() << "\n";
   out << "control socket: " << (control_server_ ? control_server_->path() : "(none)") << "\n";
   out << "font: " << config_.font << ' ' << config_.font_size << "\n";
+  out << "font_ligatures: " << (config_.font_ligatures ? "true" : "false") << "\n";
   out << "theme: " << (config_.theme.empty() ? "(none)" : config_.theme) << "\n";
   if (active_cell()) {
     out << "active cell: " << active_cell()->id() << "\n";
@@ -392,6 +393,7 @@ std::string Compositor::reload_config() {
   // Commit only after configuration, theme and font have all been validated.
   reset_cell_animations();
   config_ = std::move(next);
+  nterm_renderer_.glyphs()->set_ligatures(config_.font_ligatures);
   nterm_renderer_.set_style(terminal_style);
   theme_engine_->swap_active(std::move(parsed));
   if (!config_.word_pool.empty()) setenv("DIFTRAYWM_WORD_POOL", config_.word_pool.c_str(), 1);

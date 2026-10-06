@@ -96,6 +96,13 @@ bool GlyphRenderer::init(const std::string &family, int pixel_size) {
   return true;
 }
 
+void GlyphRenderer::set_ligatures(bool enabled) {
+  if (ligatures_ == enabled) return;
+  ligatures_ = enabled;
+  cache_.clear();
+  cache_bytes_ = 0;
+}
+
 bool GlyphRenderer::initialize(const std::string &family, int pixel_size) {
   // Use the host's font configuration with the vendored library. This avoids
   // embedding the build prefix's font configuration path in installed apps.
@@ -165,8 +172,17 @@ const GlyphRenderer::Glyph *GlyphRenderer::rasterize(const uint32_t *codepoints,
   hb_buffer_t *buffer = hb_buffer_create();
   hb_buffer_add_utf32(buffer, codepoints, static_cast<int>(length), 0, static_cast<int>(length));
   hb_buffer_guess_segment_properties(buffer);
-  const hb_feature_t liga{HB_TAG('l', 'i', 'g', 'a'), 1, 0, static_cast<unsigned>(-1)};
-  hb_shape(rendering_font, buffer, &liga, 1);
+  // Programming fonts often implement their ligatures through contextual
+  // alternates (calt), rather than liga alone. Keep HarfBuzz shaping active
+  // even when these optional substitutions are disabled, so combining marks
+  // and required script shaping still work.
+  const unsigned enabled = ligatures_ ? 1U : 0U;
+  const hb_feature_t features[] = {
+      {HB_TAG('l', 'i', 'g', 'a'), enabled, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+      {HB_TAG('c', 'l', 'i', 'g'), enabled, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+      {HB_TAG('c', 'a', 'l', 't'), enabled, HB_FEATURE_GLOBAL_START, HB_FEATURE_GLOBAL_END},
+  };
+  hb_shape(rendering_font, buffer, features, 3);
   unsigned int count = 0;
   hb_glyph_info_t *info = hb_buffer_get_glyph_infos(buffer, &count);
   if (!info || count == 0) {

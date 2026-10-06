@@ -266,6 +266,7 @@ exact reason when it cannot start rather than failing halfway. See
 | `gcursor_mode` | `stack` or `tab` | tab | Layout for extra GCursors |
 | `font` | non-empty string | monospace | Font family for NTerm |
 | `font_size` | int >= 8 | 14 | Font pixel size |
+| `font_ligatures` | bool | true | Enable OpenType ligatures and contextual alternates (`liga`, `clig`, `calt`) |
 | `shell` | non-empty string | libshell | New-cell shell |
 | `word_pool` | path | /usr/share/dict/words | GCursor name pool |
 | `theme` | path | (none) | CSS theme file |
@@ -275,6 +276,19 @@ exact reason when it cannot start rather than failing halfway. See
 Booleans accept `true`/`false` in the DSL and YAML, and are written unquoted in
 TOML. The launcher taskbar is an overlay, so locking it never resizes a cell's
 terminal.
+
+### Programming ligatures and Nerd Fonts
+
+NTerm enables font-provided ligatures by default, using HarfBuzz to shape
+adjacent text with compatible styling. Select an installed ligature-capable
+font with `font`, for example `JetBrainsMono Nerd Font`. Nerd Font icon patches
+and programming ligatures are distinct: the underlying font must provide the
+ligature substitutions; adding icons alone does not add ligatures.
+
+Set `font_ligatures = false` in `general { ... }` to disable optional ligatures
+and contextual alternates, then run `config reload` in the Command Bar.
+Unicode shaping, combining marks, and Nerd Font icon fallback remain available
+with ligatures disabled.
 
 ## TOML and YAML
 

@@ -29,6 +29,7 @@ public:
   GlyphRenderer &operator=(const GlyphRenderer &) = delete;
 
   bool init(const std::string &family, int pixel_size);
+  void set_ligatures(bool enabled);
   void draw_text(const char *text, uint32_t *pixels, int width, int height,
                  const float background[4], const float foreground[4]);
   int cell_width() const { return cell_width_; }
@@ -49,6 +50,7 @@ private:
   int cell_width_ = 8;
   int cell_height_ = 16;
   int baseline_ = 12;
+  bool ligatures_ = true;
   std::unordered_map<std::u32string, Glyph> cache_;
   std::size_t cache_bytes_ = 0;
 };
