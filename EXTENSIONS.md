@@ -16,6 +16,12 @@ diftray.on("view", function(event)
 end)
 ```
 
+Eight extensions ship in `extensions/`: `ac` (autocomplete and command
+palette), `hist` (command journal with undo), `remap` (keymap INI workbench),
+`macro`, `ws` (workspace board), `skin` (theme presets), `note` (cell and cursor
+notebook) and `pulse` (session event sampler). See `extensions/README.md` for
+what each does and for the sandbox limits that shape them.
+
 `register_command(name, callback)` adds a Command Bar command. `tokens` is a
 one-based array including the command name; `scope` is `cell` or `global`.
 Built-in commands and existing registrations cannot be replaced.

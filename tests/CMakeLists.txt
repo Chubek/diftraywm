@@ -84,6 +84,19 @@ add_dependencies(diftraywm_extensions_test diftraywm_test_plugin diftraywm_faile
 add_test(NAME diftraywm_extensions_test COMMAND diftraywm_extensions_test)
 set_tests_properties(diftraywm_extensions_test PROPERTIES TIMEOUT 10)
 
+# Every Lua extension shipped in extensions/, loaded into the real engine and
+# exercised through the Command Bar. A syntax error, a call to a function the
+# sandbox removed or a runaway loop fails here rather than on a desktop.
+add_executable(diftraywm_extension_scripts_test extension_scripts.cpp)
+diftraywm_target_defaults(diftraywm_extension_scripts_test)
+diftraywm_link_exe(diftraywm_extension_scripts_test)
+target_compile_definitions(diftraywm_extension_scripts_test PRIVATE
+  EXTENSION_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../extensions")
+add_dependencies(diftraywm_extension_scripts_test diftraywm_bundled_notelets)
+add_test(NAME diftraywm_extension_scripts_test
+  COMMAND diftraywm_extension_scripts_test)
+set_tests_properties(diftraywm_extension_scripts_test PROPERTIES TIMEOUT 30)
+
 add_executable(diftraywm_shell_test shell.cpp)
 diftraywm_target_defaults(diftraywm_shell_test)
 target_link_libraries(diftraywm_shell_test PRIVATE diftraywm_nterm)

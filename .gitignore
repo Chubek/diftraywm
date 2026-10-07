@@ -881,3 +881,7 @@ Thumbs.db
 
 # Compositor extension examples are source, not generated LuaLaTeX output.
 !examples/*.lua
+
+# The shipped extensions are source too. Both *.lua rules above are there for
+# LuaLaTeX's generated output, which lands next to the .tex files it renders.
+!extensions/*.lua
