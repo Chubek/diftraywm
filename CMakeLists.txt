@@ -507,6 +507,11 @@ add_library(diftraywm_keymap STATIC
 )
 diftraywm_target_defaults(diftraywm_keymap)
 
+add_library(diftraywm_cheddar STATIC
+  src/cheddar/Cheddar.cpp
+)
+diftraywm_target_defaults(diftraywm_cheddar)
+
 # The system-wide evdev backend. Separate from the model on purpose: it needs
 # /dev/input and /dev/uinput, which only a privileged daemon has.
 add_library(diftraywm_remap STATIC
@@ -537,6 +542,7 @@ function(diftraywm_link_exe target)
     diftraywm_plugin
     diftraywm_lua
     diftraywm_keymap
+    diftraywm_cheddar
     diftraywm_notelet
     diftray_libtsm
     diftray_ptytty

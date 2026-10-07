@@ -271,6 +271,28 @@ public:
   }
 };
 
+class CheddarHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "cheddar"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor) return "cheddar unavailable";
+    if (tokens.size() == 1) return context.compositor->open_cheddar();
+    if (tokens[1] == "close" && tokens.size() == 2) return context.compositor->close_cheddar();
+    return context.compositor->open_cheddar(join_tokens(tokens, 1));
+  }
+};
+
+class DispatchHandler final : public CommandHandler {
+public:
+  bool matches(std::string_view command) const override { return command == "dispatch"; }
+  std::string execute(const std::vector<std::string> &tokens, CommandScope,
+                      CommandContext &context) override {
+    if (!context.compositor || tokens.size() < 2) return "dispatch requires a command";
+    return context.compositor->dispatch_program(join_tokens(tokens, 1));
+  }
+};
+
 class HelpHandler final : public CommandHandler {
 public:
   bool matches(std::string_view command) const override {
@@ -665,6 +687,8 @@ void register_builtin_handlers(CommandBar &bar) {
   bar.register_handler(std::make_unique<SetHandler>());
   bar.register_handler(std::make_unique<ThemeHandler>());
   bar.register_handler(std::make_unique<NoteletHandler>());
+  bar.register_handler(std::make_unique<CheddarHandler>());
+  bar.register_handler(std::make_unique<DispatchHandler>());
   bar.register_handler(std::make_unique<HelpHandler>());
   bar.register_handler(std::make_unique<TabHandler>());
   bar.register_handler(std::make_unique<MuxHandler>());

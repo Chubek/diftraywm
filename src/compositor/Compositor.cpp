@@ -14,6 +14,7 @@
 #include "views/TCursorView.hpp"
 #include "views/View.hpp"
 #include "input/TextInput.hpp"
+#include "cheddar/Cheddar.hpp"
 
 #include <termlib.h>
 #include <wayland-server-core.h>
@@ -706,7 +707,8 @@ void Compositor::update_chrome() {
     if (help_search_open_) {
       prompt = "/" + help_search_input_;
     } else {
-      prompt = command_bar_.scope == CommandScope::NCURSOR_GLOBAL ? "global: " : ":";
+      prompt = cheddar_active() ? "cheddar: " :
+               (command_bar_.scope == CommandScope::NCURSOR_GLOBAL ? "global: " : ":");
       prompt += command_bar_.input_buffer;
     }
     diftray_wayland_runtime_set_command_bar(wayland_runtime_, true, prompt.c_str());
@@ -1247,8 +1249,8 @@ bool Compositor::feed_command_bar_key(uint32_t keysym, uint32_t unicode) {
     if (launcher_mode_ && command.find("launch ") != 0) {
       command = "launch " + command;
     }
-    command_bar_.dispatch(command);
-    status_line_ = command_bar_.status_line();
+    if (cheddar_active() && !launcher_mode_) status_line_ = cheddar_command(command);
+    else { command_bar_.dispatch(command); status_line_ = command_bar_.status_line(); }
     close_command_bar();
     return true;
   }
@@ -1419,6 +1421,10 @@ bool Compositor::handle_key(uint32_t keysym, uint32_t modifiers, uint32_t state,
   }
   if (meta && (keysym == XKB_KEY_colon || keysym == XKB_KEY_semicolon)) {
     open_command_bar(CommandScope::NCURSOR_GLOBAL, "");
+    return true;
+  }
+  if (!meta && cheddar_active() && cheddar_->dispatch_mode() && keysym == XKB_KEY_colon) {
+    if (auto *cell = active_cell(); cell && cell->nterm()) cell->nterm()->feed_input(":");
     return true;
   }
   if (!meta && keysym == XKB_KEY_colon && !active_gcursor()) {

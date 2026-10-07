@@ -17,6 +17,7 @@
 #include "views/Cell.hpp"
 #include "views/NCursorView.hpp"
 #include "views/GCursorView.hpp"
+#include "cheddar/Cheddar.hpp"
 
 #include <termlib.h>
 #include <wayland-server-core.h>
@@ -88,6 +89,10 @@ std::string task_entry(const std::string &label, bool active, std::size_t cells)
   }
   return entry;
 }
+}
+
+bool Compositor::cheddar_active() const {
+  return cheddar_ && cheddar_->active();
 }
 
 const std::string &Compositor::control_socket() const {
@@ -333,6 +338,52 @@ std::string Compositor::list_extensions() const {
     out << name;
   }
   return out.str();
+}
+
+std::string Compositor::open_cheddar(const std::string &path) {
+  if (!cheddar_) cheddar_ = std::make_unique<diftray::cheddar::Editor>();
+  if (path.empty()) {
+    cheddar_->open(std::filesystem::path{}, nullptr);
+    return "cheddar opened";
+  }
+  std::string error;
+  if (!cheddar_->open(path, &error)) return "cheddar: " + error;
+  return "cheddar opened " + path;
+}
+
+std::string Compositor::close_cheddar() {
+  if (!cheddar_ || !cheddar_->active()) return "cheddar is not open";
+  cheddar_->close();
+  return "cheddar closed";
+}
+
+std::string Compositor::dispatch_program(const std::string &command) {
+  if (command.empty()) return "dispatch requires a command";
+  if (!cheddar_) cheddar_ = std::make_unique<diftray::cheddar::Editor>();
+  if (!cheddar_->active()) cheddar_->open({}, nullptr);
+  cheddar_->set_dispatch_mode(true);
+  return launch_program(command);
+}
+
+std::string Compositor::cheddar_command(const std::string &command) {
+  if (!cheddar_ || !cheddar_->active()) return "cheddar is not open";
+  if (command.rfind("dispatch ", 0) == 0) return dispatch_program(command.substr(9));
+  if (command == "close") return close_cheddar();
+  if (command == ":~disengage" || command == "~disengage") {
+    cheddar_->set_dispatch_mode(false);
+    return "cheddar dispatch disengaged";
+  }
+  if (!command.empty() && command.front() == '!') {
+    const auto delegated = command.substr(1);
+    return delegated.empty() ? "! requires a DiftrayWM command" : run_control_command(delegated).second;
+  }
+  if (command.rfind("write", 0) == 0 || command == "w") {
+    std::string error; return cheddar_->save(&error) ? "cheddar saved" : "cheddar: " + error;
+  }
+  if (command == "undo") return cheddar_->buffer().undo() ? "cheddar undo" : "nothing to undo";
+  if (command == "redo") return cheddar_->buffer().redo() ? "cheddar redo" : "nothing to redo";
+  if (command == "diff") return cheddar_->diff().empty() ? "cheddar: no changes" : cheddar_->diff();
+  return "cheddar commands: w, write, undo, redo, diff, close, !<DiftrayWM command>, :~disengage";
 }
 
 std::string Compositor::open_config() {

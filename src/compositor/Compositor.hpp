@@ -44,6 +44,7 @@ class LuaEngine;
 class NoteletCatalog;
 class Notelet;
 class ControlServer;
+namespace diftray::cheddar { class Editor; }
 
 struct WlDisplayDeleter {
   void operator()(wl_display *ptr) const noexcept;
@@ -118,6 +119,11 @@ public:
   std::string find_help(const std::string &pattern);
   std::string set_help_bookmark(const std::string &name);
   std::string open_help_bookmark(const std::string &name);
+  std::string open_cheddar(const std::string &path = {});
+  std::string close_cheddar();
+  std::string cheddar_command(const std::string &command);
+  std::string dispatch_program(const std::string &command);
+  bool cheddar_active() const;
   bool help_pager_active() const { return help_pager_active_; }
   const std::string &help_page_name() const { return help_pager_.page_name(); }
   std::string spawn_ncursor();
@@ -292,6 +298,7 @@ public:
   diftray_wayland_runtime *wayland_runtime_ = nullptr;
   CompositorConfig config_;
   std::unique_ptr<ControlServer> control_server_;
+  std::unique_ptr<diftray::cheddar::Editor> cheddar_;
   bool restart_requested_ = false;
   bool exit_requested_ = false;
   bool meta_prefix_pending_ = false;
