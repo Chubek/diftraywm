@@ -605,10 +605,16 @@ public:
 
 class SessionHandler final : public CommandHandler {
 public:
-  bool matches(std::string_view command) const override { return command == "session"; }
+  bool matches(std::string_view command) const override {
+    return command == "session" || command == "quit";
+  }
   std::string execute(const std::vector<std::string> &tokens, CommandScope,
                       CommandContext &context) override {
     if (!context.compositor) return "session control unavailable";
+    if (tokens.front() == "quit") {
+      if (tokens.size() != 1) return "usage: quit";
+      return context.compositor->request_exit();
+    }
     if (tokens.size() < 2) {
       return "session supports: status, exit, restart";
     }
